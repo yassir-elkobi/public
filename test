@@ -1,0 +1,68 @@
+private void populateField(JSONObject output, Map<String, Object> itemMap, String k,
+                            String identifier, String priceExpression,
+                            String instrumentType, String requestDate, String code) {
+    if (k.contains("-")) {
+        if (!instrumentType.isEmpty() && code.equalsIgnoreCase(FUNDS)) {
+            // FUNDS compound field: instrumentType = "VALUE1|VALUE2"
+            String[] parts = instrumentType.split("\\|");
+            if (parts.length > 1) {
+                output.put(k, itemMap.get(identifier.toUpperCase()) + "-" +
+                        itemMap.get(parts[1].toUpperCase()));
+            } else {
+                output.put(k, itemMap.get(identifier.toUpperCase()));
+            }
+        } else {
+            // Factset compound field e.g. "Synonym Code-Market Place", "Synonym Code-Currency"
+            // Left part = identifier value, right part = mapped itemMap key
+            String[] parts = k.split("-", 2);
+            Object identifierVal = itemMap.get(identifier.toUpperCase());
+
+            if (parts.length > 1) {
+                String rightKey = parts[1].trim().replace(' ', '_').toUpperCase();
+                Object rightVal = itemMap.get(rightKey);
+
+                if (rightVal != null) {
+                    output.put(k, identifierVal + "-" + rightVal);
+                } else {
+                    log.debug("populateField: right-side key '{}' not found in itemMap for field '{}'",
+                            rightKey, k);
+                    output.put(k, identifierVal);
+                }
+            } else {
+                output.put(k, identifierVal);
+            }
+        }
+
+    } else if (k.equalsIgnoreCase(PRICE_EXPRESSION.replace("_", " "))) {
+        // priceExpression may be a literal value (e.g. "P") OR a field reference
+        // (e.g. "Synonym Code-Currency") — resolve it if it looks like a compound field
+        if (priceExpression != null && priceExpression.contains("-")) {
+            String[] parts = priceExpression.split("-", 2);
+            String rightKey = parts[1].trim().replace(' ', '_').toUpperCase();
+            Object rightVal = itemMap.get(rightKey);
+            Object identifierVal = itemMap.get(identifier.toUpperCase());
+            if (rightVal != null) {
+                // e.g. "Synonym Code-Currency" → "CA62930A1021-CAD"
+                output.put(k, identifierVal + "-" + rightVal);
+            } else {
+                // right side not in itemMap — output literal value
+                output.put(k, priceExpression);
+            }
+        } else {
+            output.put(k, priceExpression);
+        }
+
+    } else if (k.equalsIgnoreCase(SYNONYM_CODE)) {
+        output.put(k, itemMap.get(identifier.toUpperCase()));
+
+    } else if (k.equalsIgnoreCase(INSTRUMENT_TYPE)) {
+        output.put(k, InstrumentTypeMapper.getDisplayValue((String) itemMap.get(INSTRUMENT)));
+
+    } else if (k.equalsIgnoreCase(DATE)) {
+        // Process H: uses historical date. OnDemand (U/I): uses yesterday.
+        output.put(k, requestDate);
+
+    } else {
+        output.put(k, itemMap.get(k.replace(' ', '_').toUpperCase()));
+    }
+}
