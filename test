@@ -66,3 +66,13 @@ private void populateField(JSONObject output, Map<String, Object> itemMap, Strin
         output.put(k, itemMap.get(k.replace(' ', '_').toUpperCase()));
     }
 }
+
+
+
+
+// BEFORE:
+String historicalDate = (String) item.getItem().get(HISTORICAL_DATE);
+
+// AFTER:
+String historicalDate = (String) item.getItem().get(HISTORICAL_DATE);
+if (historicalDate != null) historicalDate = historicalDate.trim();
