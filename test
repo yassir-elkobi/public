@@ -1,1 +1,335 @@
+# Understanding the BNP Paribas DA NEXT Agentic AI Project — End to End
 
+Let me walk you through this carefully, from the business problem all the way to how you would actually build the agentic system. I'll go slowly because the project only makes sense once you understand the pricing world it sits in.
+
+---
+
+## Part 1: The Business Context — What Does AMANDA Actually Do?
+
+BNP Paribas is a custodian and asset servicer. Every business day, thousands of mutual funds, pension funds, and institutional portfolios held at BNP need to be **valued** — meaning every security in those portfolios (bonds, equities, ETFs, etc.) must be assigned a price so that the fund's Net Asset Value (NAV) can be calculated and published.
+
+**AMANDA** is the BNP system that does this pricing at scale. Its job is simple in principle:
+
+1. For every security in every fund, fetch today's price from market data vendors
+2. Run validation checks on those prices
+3. Publish a clean, validated price to downstream accounting systems
+
+The published NAV is what investors see, what fund managers report, and what regulators inspect. So getting it right matters — a wrong price means a wrong NAV, which means investors buy/sell shares at the wrong value. That's a regulatory and financial incident.
+
+### The vendor structure: PSA vs Non-PSA
+
+For each pricing policy, BNP defines a hierarchy of "approved" price vendors called **PSA vendors** (Primary Source Approved). Typically:
+
+- **P1** = first-priority vendor (e.g., Telekurs, CBBT, BVAL)
+- **P2** = second-priority vendor
+- **P3** = third-priority vendor (when applicable)
+- **Non-PSA** = a reference vendor like Bloomberg, used as a tiebreaker but not a primary source
+
+The pricing policy is **client-specific** — DWS wants prices a certain way, KLESIA another way, LBPAM another way. That's why the Excel workbook has separate tabs per client.
+
+---
+
+## Part 2: What Is a "Pricing Exception" and What Triggers One?
+
+A pricing exception is **any case where AMANDA cannot automatically validate the price** because the data doesn't agree with itself. AMANDA runs five built-in controls on every price. If any control fails, the price is flagged as a "Pending" exception that a human operator must review.
+
+### The five Amanda controls (from the decision tree slides)
+
+| Control | What it checks | Threshold |
+|---|---|---|
+| **D/D-1 variation** | Today's price vs yesterday's price | ±1% + flexible by price band |
+| **Price range scaling** | Adjusts threshold based on price level | +0.5% per range (>90, 90-80, 79-61, 60-30, <30) |
+| **Multi-provider** | Do the different vendors agree? | ±1% |
+| **Trend control** | Have all vendors moved in the same direction by a lot? | 100 basis points |
+| **Spread check** | Is the bid-ask spread reasonable? | 10% |
+
+For equities, **only D/D-1 is "blocking"** — others are warnings. For bonds, all are taken seriously.
+
+### What concretely triggers an exception?
+
+There are basically four causes:
+
+1. **High variance** — vendor prices disagree beyond tolerance (e.g., P1 says 98.50, P2 says 102.10)
+2. **Missing data** — one or more vendors didn't supply a price today
+3. **Mismatch between providers** — same as variance but specifically across PSA vendors
+4. **Stale data** — vendor is returning yesterday's price unchanged (suspicious for liquid securities)
+
+That's the universe of triggers. Everything in the validation rules workbook is logic for how to *resolve* one of these four trigger conditions.
+
+---
+
+## Part 3: How Operators Resolve Exceptions Today (the "Old Way")
+
+This is where the workbook comes alive. Let me walk through it as an operator would actually experience it.
+
+### The decision tree for bonds (most common pattern)
+
+When an exception lands on an operator's desk, they look at which vendors agree and follow a scenario:
+
+**Scenario 1 — Two PSA vendors agree (the easy case)**
+P1 matches P2 within tolerance → validate P1. Done in seconds.
+
+**Scenario 2 — P1 matches, P2 doesn't, and Non-PSA (Bloomberg) supports P1**
+The operator opens Bloomberg, looks at the BVAL price, sees it agrees with P1, and validates P1.
+
+**Scenario 3 — P1 doesn't match, P2 matches, and Non-PSA supports P2**
+Same thing but in the other direction — validate P2 because Bloomberg backs it.
+
+**Scenario 4 — Nothing matches (the hard case)**
+This is the one that takes 15–30 minutes of analyst work. The operator must:
+
+1. Check the price history — what source was used for validation last time?
+2. Check each vendor's history — are they providing genuine traded prices, or just repeating yesterday's price (stale)?
+3. Calculate variance differences between vendors
+4. For equities specifically: if variance is <10% and not trending oddly, **validate** the security but warn FA/CAM about the high variance. If variance is >10% and not trending, **stale** the price (use yesterday's) and warn FA/CAM. Either way, expect possible client pushback.
+5. If validating without proper support: after publication, immediately email all vendors and notify the client of the decision, asking approval or requesting an FVP (Fair Value Price).
+
+### Why it's hard
+
+Now layer on the client-specific overrides. The operator must remember:
+
+- **DWS** has a 10-deep Bloomberg contributor hierarchy: if CBBT (default) has no price, fall to BVAL, then HSET, then CBKG, RBSM, MSEG, NOMX, CALY, BAYL. Different funds may have different "Bloomberg contributor instructed by DWS" as the true first priority.
+- **KLESIA** has rule PR.POL.SP.61: all bonds priced from P1 TKS 186; on US/UK market holidays, if no TKL price, keep stale prices for all PKL% funds.
+- **LBPAM** has rule BVL4/BVN4/BVT4 PPY: must price from BVL4; if no BVL4, check Bloomberg for BVL4; if still nothing, fall to P2 BGN; if no P2, maintain at COST.
+- **EDRAM** (CCR) has rule CCR CLOSE MID: all bonds use BVAL MID PRICE as P1; fallback to P2/P3; finally to COST.
+- **BDFG** has rule for funds PBG001, PBG055 (TELEKURS 3184); PBG030, PBG034 must be priced with first priority for new trades.
+- **Milan** clients (except Symphonia) require only PSA1 — if missing, keep stale. P2/P3 are enabled only for reporting.
+- **Dublin MSCI ETF** Ireland funds: if no PSA, fall to GVP source.
+
+Multiply this by hundreds of pricing policies and you can see why this is heavy manual work, why it's error-prone, and why training new operators takes months. The **15–17 FTE annual saving** in the business case is essentially the cost of this institutional knowledge being applied by humans every day.
+
+### The volume
+
+The deck doesn't state daily exception volume explicitly, but the workload number (35 m/d AS-IS for #79A) and the FTE savings target suggest several hundred exceptions per day across all clients. Most are scenarios 1–3 (mechanical). The tail is scenario 4 (judgment).
+
+---
+
+## Part 4: How Agentic AI Solves It
+
+The fundamental insight is this: **the decision tree is already written down**. Operators aren't being creative — they're executing a documented procedure with lookups across systems. That makes it a strong candidate for agentic automation, because the "agent" can follow the same procedure but faster and without context-switching cost.
+
+### Why "agentic" and not just "rules + RPA"?
+
+A pure rules engine could handle Scenarios 1–3 today. The reason agentic AI is the right tool is:
+
+1. **Routing across client-specific rules.** The agent needs to know "this is a KLESIA bond on a UK holiday, apply PR.POL.SP.61." Hand-coding this as if/then for every client is a maintenance nightmare; expressing it as natural-language rules the agent can interpret is more sustainable.
+2. **Reasoning over Scenario 4.** Deciding whether a price is "stale vs genuine," whether variance is "in trend or not," and whether to validate-vs-stale at the 10% threshold requires looking at history, comparing vendors, and making a judgment. LLMs can do this with appropriate tools.
+3. **External lookups.** The agent needs to query Bloomberg, LSEG, etc., for additional context — news, corporate actions, market status (e.g., trading halt), security status (e.g., delisted). This is multi-tool orchestration, which is exactly what agentic systems do well.
+4. **Explaining its decisions.** A pricing decision must be auditable. An LLM-based agent can produce a natural-language justification — "Validated P1 because BVAL confirms within 0.3%, no corporate action detected, and D/D-1 movement aligns with sector index" — which operators and auditors can verify.
+
+### The five-agent architecture (from slide #79A and the Confluence page)
+
+```
+       ┌────────────────────────────────────────────────┐
+       │           ORCHESTRATOR AGENT                   │
+       │  Reads exception, plans which agents to call   │
+       └───────┬──────────────┬───────────┬─────────────┘
+               │              │           │
+               ▼              ▼           ▼
+       ┌──────────────┐  ┌──────────┐  ┌──────────────┐
+       │  RULE AGENT  │  │   DATA   │  │   VENDOR     │
+       │              │  │  AGENT   │  │   AGENT      │
+       │ Applies      │  │ Looks up │  │ Calls BBG,   │
+       │ decision     │  │ Amanda DB│  │ LSEG, etc.   │
+       │ tree + client│  │ history, │  │ via API for  │
+       │ overrides    │  │ non-PSA  │  │ extra prices │
+       └──────┬───────┘  └────┬─────┘  └─────┬────────┘
+              │               │              │
+              └───────────────┼──────────────┘
+                              ▼
+                  ┌────────────────────────┐
+                  │   RESOLUTION AGENT     │
+                  │ Synthesizes evidence,  │
+                  │ proposes validate /    │
+                  │ stale / escalate +     │
+                  │ written justification  │
+                  └──────────┬─────────────┘
+                             │
+                             ▼
+                  ┌────────────────────────┐
+                  │  HUMAN-IN-THE-LOOP     │
+                  │  (semi-auto initially) │
+                  │  Operator approves or  │
+                  │  overrides             │
+                  └────────────────────────┘
+```
+
+Plus three persistent **stores**:
+
+- **Memory** — short-term state of the current exception workflow
+- **Knowledge** — the pricing policies, client overrides, vendor hierarchies (i.e., the workbook contents, but machine-readable)
+- **Rules** — the decision tree logic and thresholds
+
+### Walking through an exception with agents
+
+Say a KLESIA bond comes in with P1 missing and P2/P3 out of range — Scenario 3 territory but on a UK market holiday.
+
+1. **Orchestrator** receives the exception. It identifies the pricing policy as KLESIA and notes the date is a UK holiday.
+2. **Rule Agent** looks up KLESIA rules, finds PR.POL.SP.61, and notes that on a UK market holiday with no TKL price, the procedure is to keep stale prices for PKL% funds. It checks: is this a PKL% fund? Yes.
+3. **Data Agent** queries the Amanda database for yesterday's validated price and the price history for the last 5 days.
+4. **Vendor Agent** is skipped — the rule says no need to call external sources.
+5. **Resolution Agent** synthesizes: "Apply PR.POL.SP.61: stale price from D-1 because TKL provided no price on UK market holiday, fund is in PKL% scope, validated price = 99.42 (unchanged from D-1)."
+6. **HITL** — operator sees the proposal with the rule cited, approves with one click.
+
+Total time: seconds instead of 10–15 minutes.
+
+### What happens for a Scenario 4 (the hard case)
+
+1. **Orchestrator** sees all PSA out of range, escalates to full analysis mode.
+2. **Rule Agent** identifies no straightforward rule applies; routes to evidence-gathering.
+3. **Data Agent** pulls price history for all vendors over last 30 days, flags which look stale (no movement) vs genuine (moving with market).
+4. **Vendor Agent** calls Bloomberg for BVAL price, news, corporate action events; calls LSEG for security status and market status (is there a trade halt? is the security delisted?).
+5. **Resolution Agent** reasons: "P1 stale (no change 5 days), P2 likely correct (moves with sector), BVAL confirms P2 within 0.5%, no corporate action, no trade halt. Recommend: validate P2. Confidence: high. Variance: 2.1% (under 10% threshold). Action: validate and send heads-up to FA/CAM per procedure."
+6. **HITL** — operator reviews evidence, confirms or overrides.
+
+This is the case where agentic AI genuinely earns its keep.
+
+---
+
+## Part 5: How You Would Actually Build This
+
+Let me get concrete on the engineering. The Confluence page tells us the stack: **Python, Java, Spring Boot, CrewAI, LLM, on DMZR infrastructure**. Here's how the pieces fit.
+
+### Step 1: Codify the knowledge base
+
+Before any AI work, you have to convert the Excel workbook and decision tree slides into machine-readable form. This is the **Knowledge** store.
+
+Structure each pricing policy as something like:
+
+```yaml
+policy_id: KLESIA_BONDS
+vendors:
+  P1: { source: TELEKURS, code: "TKS 186" }
+  P2: { source: BVAL }
+  P3: { source: TELEKURS_3184 }
+  non_psa: BLOOMBERG_BVAL
+thresholds:
+  d_d1: 0.01
+  price_ranges:
+    - { range: ">90", adjustment: 0.005 }
+    - { range: "90-80", adjustment: 0.005 }
+overrides:
+  - id: PR.POL.SP.61
+    condition: "fund matches PKL% AND (UK_holiday OR (US_holiday AND has_US_position))"
+    action: "if no P1 price, keep stale for all PKL% funds"
+scenarios:
+  - scenario_id: 1
+    condition: "P1.matching AND P2.matching"
+    action: "validate P1"
+    reason: "Two PSA vendors in range"
+  # ... etc
+```
+
+You do this for every client tab. **This is 70% of the project's actual work** — turning tribal knowledge in a spreadsheet into structured rules. Don't underestimate it.
+
+### Step 2: Build the tool layer
+
+Each agent needs **tools** — functions it can call. Define these clearly:
+
+- `get_amanda_price_history(security_id, days)` — pulls historical prices from Amanda DB
+- `get_bloomberg_price(security_id, fields)` — calls BBG API
+- `get_lseg_price(security_id)` — calls LSEG API
+- `get_security_status(security_id)` — delisted, halted, active
+- `get_corporate_actions(security_id, date_range)` — dividends, splits, mergers
+- `calculate_variance(price_set)` — math util
+- `is_market_holiday(market, date)` — calendar lookup
+- `lookup_policy(policy_id)` — read from Knowledge store
+- `propose_decision(action, reason, confidence)` — output structured proposal
+
+These tools are the *only* things the LLM-driven agents can do. Tool design is the most important engineering decision — it constrains what agents can and cannot do.
+
+### Step 3: Define each agent's role and prompt
+
+Using **CrewAI** (the chosen framework), each agent is essentially: a role description + a goal + a list of tools + an LLM. For example, the Rule Agent looks roughly like:
+
+```python
+rule_agent = Agent(
+    role="Pricing Rule Specialist",
+    goal="Identify the correct decision tree scenario and any applicable "
+         "client-specific override for the given pricing exception",
+    backstory="You are an expert in BNP's client-specific pricing rules. "
+              "You know the difference between DWS, KLESIA, LBPAM, EDRAM, "
+              "BDFG, Milan, and Dublin rules. You always cite the rule "
+              "you apply.",
+    tools=[lookup_policy, is_market_holiday],
+    llm=llm_at_cib,
+    allow_delegation=False
+)
+```
+
+You repeat this for Orchestrator, Data Agent, Vendor Agent, Resolution Agent.
+
+### Step 4: Build the workflow (the "crew")
+
+```python
+crew = Crew(
+    agents=[orchestrator, rule_agent, data_agent, vendor_agent, resolution_agent],
+    tasks=[
+        Task("Read the exception and determine which agents to engage", 
+             agent=orchestrator),
+        Task("Identify applicable scenario and rule overrides", 
+             agent=rule_agent),
+        Task("Gather necessary price history and Amanda data", 
+             agent=data_agent),
+        Task("Fetch external evidence if needed", 
+             agent=vendor_agent),
+        Task("Synthesize a final recommendation with justification", 
+             agent=resolution_agent)
+    ],
+    process=Process.hierarchical  # orchestrator manages
+)
+```
+
+### Step 5: Wire into AMANDA
+
+This is non-trivial. The current AMANDA pipeline is:
+
+```
+Price requests P1/P2/P3 → Selection (controls) → Exception validations → Diffusion
+```
+
+You insert the AI workflow between "Exception validations" and "Diffusion." Exceptions get pushed to a queue, picked up by workers, run through the crew, and either auto-validated (with full audit trail) or sent to an operator with the AI's proposal pre-populated. The Confluence architecture diagram shows this exact pattern: AMANDA → queue → workers → AI Workflow → human in the loop.
+
+### Step 6: Validation, governance, rollout
+
+You absolutely cannot just turn this on. The plan should be:
+
+1. **Shadow mode (POC, ends June per the slide)**: Agent runs in parallel on real exceptions, makes proposals, but operators continue to decide independently. You measure agreement rate.
+2. **Assisted mode**: Operators see the agent's proposal as a suggestion. They approve or override. You measure override rate and root-cause overrides — every override is training data.
+3. **Semi-autonomous mode (the Confluence "in the beginning" position)**: High-confidence proposals (e.g., Scenarios 1–3 with full agreement) auto-validate. Low-confidence or Scenario 4 still go to humans.
+4. **Eventually**: Most volume is autonomous, humans handle exceptions to the exceptions.
+
+Each stage needs metrics, monitoring (the deck mentions an Observability Service), and a kill switch. The deck's "Fall back scenario if issue with agent — Agent will operate semi-autonomous for a period of time" comment is *backwards* — you want the opposite: if the agent has an issue, you fall back to humans, not the other way around. Worth clarifying.
+
+### Step 7: Governance and explainability
+
+For every auto-validated price, you store:
+
+- The exception that triggered it
+- Which scenario was identified and which rule cited
+- Every tool call made and its result
+- The Resolution Agent's natural-language justification
+- The model version and prompt hash
+
+This is what makes the system auditable for regulators and clients. Without this, you cannot ship.
+
+---
+
+## Part 6: Putting It All Together — Why This Project Matters
+
+The reason this project is interesting isn't the AI — it's that **the underlying problem is exactly the kind of work agentic AI was invented for**:
+
+- Structured decisions with documented rules
+- Heavy lookups across multiple data sources
+- Client-specific routing across many similar-but-different policies
+- A real but bounded judgment component (Scenario 4)
+- High volume, high cost of human labor, low margin for error
+- Clear human-in-the-loop fallback
+
+If BNP gets this right, the same pattern transfers naturally to FX rates (#80), dividend control (#85), data quality checks (#78), Colibri static data (#77), and even the asset creation workflow (#84). The pricing exception use case is the wedge — succeed there and the agentic operating model scales horizontally across DA operations.
+
+The risks are real (capacity, key-person dependency, regulatory explainability, vendor API stability) but the use case itself is well-chosen.
+
+---
+
+Want me to go deeper on any specific piece — the rule codification, the prompts for each agent, the AMANDA integration, the governance and audit trail, or how to handle a specific tricky scenario like the DWS Bloomberg hierarchy?
