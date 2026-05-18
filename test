@@ -1,11 +1,1 @@
-For each client using Process H, is_on_demand_active must be set to TRUE in muse_client_references for auto-diffusion to trigger after Factset response integration. Currently only TPA has this enabled. Other clients (APE, ESY, etc.) will need this set to TRUE when they complete parallel run onboarding.
-
-To test the full auto-diffusion flow locally without waiting for onboarding:
-
-
-UPDATE own_83650_muse.muse_client_references
-SET is_on_demand_active = TRUE,
-    updated_at = CURRENT_TIMESTAMP
-WHERE client_label = 'APE';
-
 
