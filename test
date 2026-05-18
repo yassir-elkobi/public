@@ -1,10 +1,1 @@
-MUSE_Sync_DAL_APE_H_20260518_001.csv
 
-security,instrument,marketPlace,currency,pricingFlag,staticFlag,derivedFlag,internalID,noval,sedolHiport,hpSydney,dimensionId,bloombergTicker,factsetId,subInstrument,priceExpression,bloomLuxFutOpt,factsetLuxFutOpt,HISTORICAL_DATE
-CA62930A1021,EQUITY,061,CAD,Y,Y,Y,13385780,,,,,,,EQUITY,20,,,20260430
-
-
-POST http://localhost:8082/providers/sync
-  ?client=APE_H
-  &filename=MUSE_Sync_DAL_APE_H_20260518_001.csv
-  &syncType=H
