@@ -351,14 +351,5 @@ Want me to go deeper on any specific piece — the rule codification, the prompt
 
 
 
-
-
-For Process H, we need rows in muse_request_parameters for each client that will use Historical (APE, IRPB, etc.) with:
-
-param_code = client label (e.g. APEM)
-param_value = filename template following the convention DD_INPUT_APEM_H_<YYYYMMDD>.req
-type = ON_DEMAND_REQUEST
-Same client_reference_id, instrument_reference_id, provider_reference_id as existing rows for that client
-
-Currently the request file generates as DD_INPUT_DT_D_H_20260430-<uid>.req instead of DD_INPUT_APEM_H_20260430.req because the H filename template is missing from this table.
-
+security,instrument,marketPlace,currency,pricingFlag,staticFlag,derivedFlag,internalID,noval,sedolHiport,hpSydney,dimensionId,bloombergTicker,factsetId,subInstrument,priceExpression,bloomLuxFutOpt,factsetLuxFutOpt,HISTORICAL_DATE
+CA62930A1021,EQUITY,061,CAD,Y,Y,Y,13385780,,,,,,,EQUITY,20,,,20260430
