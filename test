@@ -334,3 +334,140 @@ The risks are real (capacity, key-person dependency, regulatory explainability, 
 
 Want me to go deeper on any specific piece — the rule codification, the prompts for each agent, the AMANDA integration, the governance and audit trail, or how to handle a specific tricky scenario like the DWS Bloomberg hierarchy?
 
+
+Good points — two separate things to address.
+
+---
+
+## Issue 1 — Request filename naming
+
+Your team's convention says: `DD_INPUT_APEM_H_20260515.req`
+
+But your generated file was: `DD_INPUT_DT_D_H_20260430-lnucfjsnhk3bhisi.req`
+
+The differences:
+```
+Expected:  DD_INPUT_APEM_H_20260515.req
+Got:       DD_INPUT_DT_D_H_20260430-<uid>.req
+                    ↑
+                "DT_D" instead of "APEM"
+```
+
+This comes from the `muse_request_parameters` table — the filename template stored there for client ESY/DT. The `DD_INPUT_DT_D_H_` prefix is whatever is stored as the request filename template for that client.
+
+**This is a data issue, not a code issue.** The team needs to insert the correct filename template in `muse_request_parameters` for each client with `_H_` pattern. For APE it should be `DD_INPUT_APEM_H_<date>.req`.
+
+---
+
+## Issue 2 — Switch to APE for testing
+
+Good decision. Run the INSERT for APE only:
+
+```sql
+INSERT INTO own_83650_muse.muse_diffusion_schedules
+    (client_reference_id,
+     instrument_reference_id,
+     diffused_data,
+     diffused_filename,
+     missing_filename,
+     schedule_expression,
+     schedule_frequency,
+     schedule_time,
+     is_active,
+     create_user,
+     created_at)
+SELECT
+    ds.client_reference_id,
+    ds.instrument_reference_id,
+    'HISTORICAL',
+    'MUSE_DD_H_Equities_APE',
+    'Missing_DD_H_Equities_APE',
+    ds.schedule_expression,
+    ds.schedule_frequency,
+    ds.schedule_time,
+    true,
+    'MUSE_INIT',
+    CURRENT_TIMESTAMP
+FROM own_83650_muse.muse_diffusion_schedules ds
+WHERE ds.diffusion_schedule_id = 1123;
+```
+
+Then update Postman to use APE:
+
+```
+GET http://localhost:8082/v1/providers/diffusion
+  ?diffusedData=HISTORICAL
+  &instrument=EQUITY
+  &clientName=APE
+```
+
+---
+
+## Also update your test sync file to use APE
+
+Rename and update content:
+
+**Filename:** `MUSE_Sync_DAL_APE_H_20260513_001.csv`
+
+```csv
+security,instrument,marketPlace,currency,pricingFlag,staticFlag,derivedFlag,internalID,noval,sedolHiport,hpSydney,dimensionId,bloombergTicker,factsetId,subInstrument,priceExpression,bloomLuxFutOpt,factsetLuxFutOpt,HISTORICAL_DATE
+CA62930A1021,EQUITY,061,CAD,Y,Y,Y,13385780,,,,,,,EQUITY,20,,,20260430
+```
+
+Drop it in `C:\workspace\bnpcib\cos\data\dalmuse\synchronizations\`
+
+Then:
+1. Let the sync run → generates `DD_INPUT_APEM_H_20260430-<uid>.req`
+2. Wait for Factset response
+3. Trigger diffusion via Postman with `clientName=APE`
+
+Show me the logs from each step.
+
+Looking at `muse_request_parameters` structure, this is **team territory**, not yours to fix alone. Here's why:
+
+---
+
+## What the table stores
+
+Each row defines a request parameter for a specific `client + instrument + provider` combination. For APE/APEM the rows include:
+- The request filename template: `DD_INPUT_APEM_H_<date>.req`
+- The output filename template
+- Factset field codes
+- Other provider-specific params
+
+**This is client configuration data** — it's owned by whoever manages the client onboarding (likely Mithra's team or the functional team).
+
+---
+
+## What you should do
+
+**Send this message to the team:**
+
+> "For Process H, we need rows in `muse_request_parameters` for each client that will use Historical (APE, IRPB, etc.) with:
+> - `param_code` = client label (e.g. `APEM`)
+> - `param_value` = filename template following the convention `DD_INPUT_APEM_H_<YYYYMMDD>.req`
+> - `type` = `ON_DEMAND_REQUEST`
+> - Same `client_reference_id`, `instrument_reference_id`, `provider_reference_id` as existing rows for that client
+>
+> Currently the request file generates as `DD_INPUT_DT_D_H_20260430-<uid>.req` instead of `DD_INPUT_APEM_H_20260430.req` because the H filename template is missing from this table."
+
+---
+
+## What YOU own vs what the TEAM owns
+
+| Item | Owner |
+|---|---|
+| Code changes (all 10+ files) | You ✅ |
+| `muse_diffusion_schedules` HISTORICAL row | You (DEV only for testing) |
+| `muse_request_parameters` H filename templates | **Team** — client config data |
+| `muse_diffusion_client_field_mappings` HISTORICAL row | **Team** — already flagged as open item |
+| AMANDA `.H` file format with HISTORICAL_DATE column | **AMANDA team** |
+
+---
+
+## For your PR description
+
+Add a section **"Data prerequisites before QUAL deployment"** listing exactly these items so the team knows what DB changes they need to prepare before going to QUAL.
+
+For now, **continue testing with the `DT_D` filename** — the code is correct, it's just using whatever template is in the DB. The functional flow is what matters for your validation.
+
