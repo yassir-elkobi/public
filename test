@@ -1,1 +1,29 @@
 
+POST muse-derived/_doc
+{
+  "SECURITY_IDENTIFIER": "CA62930A1021",
+  "MARKET_PLACE": "061",
+  "Isin_Market": "CA62930A1021_061",
+  "CURRENCY": "CAD",
+  "INSTRUMENT": "EQUITY",
+  "CLIENT": "APE",
+  "HISTORICAL_DATE": "20260430",
+  "PROVIDER_DATATYPE": "DERIVED",
+  "@timestamp": "2026-04-30T12:00:00"
+}Both APE_H and IRP_BV_H rows have client_reference_id = null. So when the code looks up params for client APE_H, it finds ALL rows with null client_reference_id — including the IRP_BV_H row. That row has no matching branch → falls into priceExpression.
+Fix: Ask Mithra to set the correct client_reference_id for each row:
+sqlUPDATE own_83650_muse.muse_request_parameters
+SET client_reference_id = (
+    SELECT client_reference_id 
+    FROM own_83650_muse.muse_client_references 
+    WHERE client_label = 'APE_H'
+)
+WHERE param_value = 'DD_INPUT_APEM_H.req';
+
+UPDATE own_83650_muse.muse_request_parameters
+SET client_reference_id = (
+    SELECT client_reference_id 
+    FROM own_83650_muse.muse_client_references 
+    WHERE client_label = 'IRP_BV_H'
+)
+WHERE param_value = 'DD_INPUT_IRPB_H.req';
