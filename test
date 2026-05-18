@@ -334,3 +334,23 @@ The risks are real (capacity, key-person dependency, regulatory explainability, 
 
 Want me to go deeper on any specific piece — the rule codification, the prompts for each agent, the AMANDA integration, the governance and audit trail, or how to handle a specific tricky scenario like the DWS Bloomberg hierarchy?
 
+
+
+
+
+So as long as our muse_diffusion_schedules HISTORICAL row exists and is_active = true, diffusion will auto-trigger after Factset response integration. ✅
+
+
+requestDetails.isOnDemandActive() — this checks the request_details table. Is the on_demand_active flag set correctly for Historical requests?
+Check the RequestDetails entity — when a Historical .req file is created, does it get on_demand_active = true?
+
+
+SELECT request_filename, sync_filename, is_on_demand_active, 
+       request_identifier, status
+FROM own_83650_muse.muse_request_details
+WHERE request_filename LIKE '%_H_%'
+ORDER BY id DESC
+LIMIT 5;
+
+
+
