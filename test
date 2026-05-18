@@ -350,6 +350,55 @@ Want me to go deeper on any specific piece — the rule codification, the prompt
 
 
 
+@AllArgsConstructor
+@Getter
+public enum SynchronizationType {
 
-security,instrument,marketPlace,currency,pricingFlag,staticFlag,derivedFlag,internalID,noval,sedolHiport,hpSydney,dimensionId,bloombergTicker,factsetId,subInstrument,priceExpression,bloomLuxFutOpt,factsetLuxFutOpt,HISTORICAL_DATE
-CA62930A1021,EQUITY,061,CAD,Y,Y,Y,13385780,,,,,,,EQUITY,20,,,20260430
+    INIT(shortSyncType: "I"),
+    UPDATE(shortSyncType: "U"),
+    HISTORICAL(shortSyncType: "H");  // ← ADD THIS
+
+    public static final Map<String, SynchronizationType> syncTypeByShortSync = new HashMap<>();
+
+    static {
+        for (SynchronizationType value : SynchronizationType.values()) {
+            syncTypeByShortSync.put(value.shortSyncType, value);
+        }
+    }
+
+    private String shortSyncType;
+
+    public static SynchronizationType of(String shortSyncType) {
+        return syncTypeByShortSync.get(shortSyncType);
+    }
+}
+
+
+
+ProcessScopeSynchronisationJobListener
+
+
+private void triggerDiffusionIfUpdateSyncTypeAndOnDemandClient(
+        SynchronizationType syncType, 
+        SynchronizationDetailsDto syncDetailsDto) {
+
+    ClientReferenceDto client = syncDetailsDto.getClientReference();
+
+    // Trigger diffusion for UPDATE (existing) and HISTORICAL (new)
+    if ((UPDATE.equals(syncType) || HISTORICAL.equals(syncType)) 
+            && client.isOnDemandActive()) {
+        String syncFilename = syncDetailsDto.getSyncFilename();
+        log.info("Triggering diffusions for '{}' client with the synchronization file '{}' ...",
+                client.getClientLabel(), syncDetailsDto.getSyncFilename());
+        diffusionHandler.processAllDiffusionsForClient(
+                client, 
+                Optional.empty(), 
+                Optional.of(syncFilename));
+    }
+}
+
+
+POST http://localhost:8082/providers/sync
+  ?client=APE
+  &filename=MUSE_Sync_DAL_APE_H_20260518_001.csv
+  &syncType=H
