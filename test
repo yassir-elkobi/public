@@ -334,7 +334,3 @@ The risks are real (capacity, key-person dependency, regulatory explainability, 
 
 Want me to go deeper on any specific piece — the rule codification, the prompts for each agent, the AMANDA integration, the governance and audit trail, or how to handle a specific tricky scenario like the DWS Bloomberg hierarchy?
 
-SELECT diffusion_schedule_id, diffused_data,
-       diffused_filename, missing_filename, is_active
-FROM own_83650_muse.muse_diffusion_schedules
-WHERE diffused_data = 'HISTORICAL';
