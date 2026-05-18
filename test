@@ -1,46 +1,116 @@
-Part 1: Questions I Need to Ask First
-These aren't bureaucratic — each one genuinely changes the architecture. Let me explain what hinges on each:
-1. What's the actual daily exception volume?
-The deck never states it. This matters enormously:
+package com.bnpp.itg.tas.ido.muse.batch.client_diffusion;
 
-Under 500/day → you can afford LLM calls on every exception, even premium models
-500–5,000/day → you need tiered routing (cheap path for easy cases, expensive for hard ones)
-Over 5,000/day → you need a hybrid where most exceptions never touch an LLM at all
+import com.bnpp.itg.tas.ido.muse.data.dto.ClientReferenceDto;
+import com.bnpp.itg.tas.ido.muse.service.diffusion.ClientScopeReader;
+import com.bnpp.itg.tas.ido.muse.service.diffusion.ClientReferenceService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.log4j.Log4j2;
+import org.springframework.batch.core.JobExecution;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.job.flow.FlowExecutionStatus;
+import org.springframework.batch.core.job.flow.JobExecutionDecider;
+import org.springframework.batch.core.scope.context.ChunkContext;
 
-My guess from the 35 m/d workload number is probably 1,000–3,000/day, but you should know the real figure.
-2. What latency is acceptable per exception?
-Pricing has hard deadlines — NAVs publish on a schedule. Is the agent expected to:
+import java.io.IOException;
+import java.time.LocalDateTime;
 
-Run in near-real-time (seconds), so operators see proposals as exceptions arrive?
-Run in batches (e.g., process the 2pm batch by 3pm)?
-Run overnight to pre-process for the next morning?
+import static com.bnpp.itg.tas.ido.muse.data.constants.JobParametersConstants.*;
+import static com.bnpp.itg.tas.ido.muse.data.constants.ErrorConstants.*;
 
-Batch mode is dramatically simpler and cheaper to build.
-3. What LLM are you actually allowed to use?
-The Confluence page says "LLM@CIB API" — that's BNP's internal LLM service. Critical questions:
+@Log4j2
+@RequiredArgsConstructor
+public class DiffusionJobDecider implements JobExecutionDecider {
 
-Which models are available? GPT-4-class, Claude-class, or smaller?
-Is there function-calling / tool-use support, or just text completion?
-What's the rate limit?
-Can you fine-tune, or only prompt?
+    private final ClientReferenceService clientReferenceService;
+    private final ClientScopeReader reader;
 
-Whether you have proper tool-use support changes the framework choice completely.
-4. What's the data sensitivity / compliance posture?
+    @Override
+    public FlowExecutionStatus decide(JobExecution jobExecution, StepExecution stepExecution) {
+        JobParameters jobParameters = jobExecution.getJobParameters();
+        String clientName = jobParameters.getString(CLIENT_NAME);
+        String instrument = jobParameters.getString(INSTRUMENT);
+        String diffusedData = jobParameters.getString(DIFFUSED_DATA);
+        String syncFileName = jobParameters.getString(SYNC_FILENAME);
 
-Can exception data leave the BNP perimeter? (Probably no — hence LLM@CIB.)
-Are pricing decisions considered "automated decision-making" under regulation? (For some jurisdictions/clients, yes — which means hard explainability requirements.)
-Does every decision need a 7-year audit trail?
+        return isEligible(clientName, instrument, diffusedData, syncFileName)
+                ? FlowExecutionStatus.COMPLETED
+                : FlowExecutionStatus.STOPPED;
+    }
 
-5. What does "the team" actually know how to build?
-Be honest about this. The deck says "1 expert on Agentic AI" and "low experience — new technology." That's a huge constraint. If the team is mostly Java/Spring Boot/Sybase people:
+    private boolean isEligible(String clientName, String instrument,
+                                String diffusedData, String syncFileName) {
+        ClientReferenceDto clientDto = clientReferenceService.getForClientName(clientName);
 
-CrewAI (Python) means they're learning a new language and a new paradigm simultaneously
-A simpler, more explicit framework may actually ship faster
+        // Process H: scope is indexed under base client name (APE, IRP_BV)
+        // not the Historical client name (APE_H, IRP_BV_H).
+        // Strip the _H suffix for scope lookup only.
+        String scopeClientName = resolveBaseClientName(clientName);
 
-6. How stable are the rules really?
-Do client pricing rules change monthly? Quarterly? Yearly? If rules change often, the architecture must make rule updates trivial (no code deploy). If rules are essentially frozen, you can hard-code more.
-7. What's the failure mode you're optimizing for?
-Two very different failure profiles:
+        return isKnownClient(clientDto, clientName)
+                && isSynchronised(clientDto.getInitSyncTime(), syncFileName,
+                        instrument, diffusedData, clientName)
+                && hasScopeToDiffuse(scopeClientName, clientDto.getInitSyncTime(),
+                        instrument, diffusedData, syncFileName);
+    }
 
-Type A: Agent validates a wrong price → published bad NAV → client incident, regulatory exposure
-Type B: Agent escalates correct prices to humans unnecessarily → no automation benefit
+    /**
+     * Resolves the base client name used for ES scope lookup.
+     * Historical clients (APE_H, IRP_BV_H) have their scope indexed
+     * under the base client name (APE, IRP_BV).
+     */
+    private String resolveBaseClientName(String clientName) {
+        if (clientName != null && clientName.endsWith("_H")) {
+            return clientName.substring(0, clientName.length() - 2);
+        }
+        return clientName;
+    }
+
+    private boolean isKnownClient(ClientReferenceDto clientDto, String clientName) {
+        if (clientDto == null) {
+            log.error(UNKNOWN_CLIENT, clientName);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isSynchronised(LocalDateTime initSynchroTime, String syncFileName,
+                                    String instrument, String diffusedData, String clientName) {
+        // Historical clients never have an initSyncTime (new client entries).
+        // syncFileName alone is sufficient to confirm synchronization happened.
+        boolean isHistorical = "HISTORICAL".equals(diffusedData);
+
+        if (initSynchroTime == null && syncFileName == null && !isHistorical) {
+            log.info("No file synchronized for this diffusion point: " +
+                            "instrument '{}', diffusedData '{}' and client '{}'. " +
+                            "Diffusion job aborted!",
+                    instrument, diffusedData, clientName);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean hasScopeToDiffuse(String scopeClientName, LocalDateTime initSynchroTime,
+                                       String instrument, String diffusedData,
+                                       String syncFileName) {
+        try {
+            if (!reader.scopeExists(scopeClientName, initSynchroTime, instrument, syncFileName)) {
+                log.info("No scope to be diffused for this diffusion point: " +
+                                "instrument '{}', diffusedData '{}' and client '{}'. " +
+                                "Diffusion job aborted!",
+                        instrument, diffusedData, scopeClientName);
+                return false;
+            }
+        } catch (IOException e) {
+            log.error("An exception occurred while preparing diffusion job decision.", e);
+            return false;
+        }
+        return true;
+    }
+}
+
+SELECT param_code, param_value, type
+FROM own_83650_muse.muse_request_parameters rp
+JOIN own_83650_muse.muse_client_references cr
+    ON rp.client_reference_id = cr.client_reference_id
+WHERE cr.client_label = 'APE_H'
+AND rp.type = 'ON_DEMAND_REQUEST';
