@@ -1,116 +1,41 @@
-package com.bnpp.itg.tas.ido.muse.batch.client_diffusion;
+Fix 1 — QueryBuilder.java line 127
 
-import com.bnpp.itg.tas.ido.muse.data.dto.ClientReferenceDto;
-import com.bnpp.itg.tas.ido.muse.service.diffusion.ClientScopeReader;
-import com.bnpp.itg.tas.ido.muse.service.diffusion.ClientReferenceService;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.log4j.Log4j2;
-import org.springframework.batch.core.JobExecution;
-import org.springframework.batch.core.StepExecution;
-import org.springframework.batch.core.job.flow.FlowExecutionStatus;
-import org.springframework.batch.core.job.flow.JobExecutionDecider;
-import org.springframework.batch.core.scope.context.ChunkContext;
 
-import java.io.IOException;
-import java.time.LocalDateTime;
+Open QueryBuilder.java and find line 127. It looks like:
+java.gte(initSynchroTime.format(FORMATTER))
+Fix — make the range condition null-safe:
 
-import static com.bnpp.itg.tas.ido.muse.data.constants.JobParametersConstants.*;
-import static com.bnpp.itg.tas.ido.muse.data.constants.ErrorConstants.*;
 
-@Log4j2
-@RequiredArgsConstructor
-public class DiffusionJobDecider implements JobExecutionDecider {
 
-    private final ClientReferenceService clientReferenceService;
-    private final ClientScopeReader reader;
-
-    @Override
-    public FlowExecutionStatus decide(JobExecution jobExecution, StepExecution stepExecution) {
-        JobParameters jobParameters = jobExecution.getJobParameters();
-        String clientName = jobParameters.getString(CLIENT_NAME);
-        String instrument = jobParameters.getString(INSTRUMENT);
-        String diffusedData = jobParameters.getString(DIFFUSED_DATA);
-        String syncFileName = jobParameters.getString(SYNC_FILENAME);
-
-        return isEligible(clientName, instrument, diffusedData, syncFileName)
-                ? FlowExecutionStatus.COMPLETED
-                : FlowExecutionStatus.STOPPED;
-    }
-
-    private boolean isEligible(String clientName, String instrument,
-                                String diffusedData, String syncFileName) {
-        ClientReferenceDto clientDto = clientReferenceService.getForClientName(clientName);
-
-        // Process H: scope is indexed under base client name (APE, IRP_BV)
-        // not the Historical client name (APE_H, IRP_BV_H).
-        // Strip the _H suffix for scope lookup only.
-        String scopeClientName = resolveBaseClientName(clientName);
-
-        return isKnownClient(clientDto, clientName)
-                && isSynchronised(clientDto.getInitSyncTime(), syncFileName,
-                        instrument, diffusedData, clientName)
-                && hasScopeToDiffuse(scopeClientName, clientDto.getInitSyncTime(),
-                        instrument, diffusedData, syncFileName);
-    }
-
-    /**
-     * Resolves the base client name used for ES scope lookup.
-     * Historical clients (APE_H, IRP_BV_H) have their scope indexed
-     * under the base client name (APE, IRP_BV).
-     */
-    private String resolveBaseClientName(String clientName) {
-        if (clientName != null && clientName.endsWith("_H")) {
-            return clientName.substring(0, clientName.length() - 2);
-        }
-        return clientName;
-    }
-
-    private boolean isKnownClient(ClientReferenceDto clientDto, String clientName) {
-        if (clientDto == null) {
-            log.error(UNKNOWN_CLIENT, clientName);
-            return false;
-        }
-        return true;
-    }
-
-    private boolean isSynchronised(LocalDateTime initSynchroTime, String syncFileName,
-                                    String instrument, String diffusedData, String clientName) {
-        // Historical clients never have an initSyncTime (new client entries).
-        // syncFileName alone is sufficient to confirm synchronization happened.
-        boolean isHistorical = "HISTORICAL".equals(diffusedData);
-
-        if (initSynchroTime == null && syncFileName == null && !isHistorical) {
-            log.info("No file synchronized for this diffusion point: " +
-                            "instrument '{}', diffusedData '{}' and client '{}'. " +
-                            "Diffusion job aborted!",
-                    instrument, diffusedData, clientName);
-            return false;
-        }
-        return true;
-    }
-
-    private boolean hasScopeToDiffuse(String scopeClientName, LocalDateTime initSynchroTime,
-                                       String instrument, String diffusedData,
-                                       String syncFileName) {
-        try {
-            if (!reader.scopeExists(scopeClientName, initSynchroTime, instrument, syncFileName)) {
-                log.info("No scope to be diffused for this diffusion point: " +
-                                "instrument '{}', diffusedData '{}' and client '{}'. " +
-                                "Diffusion job aborted!",
-                        instrument, diffusedData, scopeClientName);
-                return false;
-            }
-        } catch (IOException e) {
-            log.error("An exception occurred while preparing diffusion job decision.", e);
-            return false;
-        }
-        return true;
-    }
+// Only add initSyncTime range filter if it exists
+// Historical clients (APE_H) have null initSyncTime — skip the range filter
+if (context.initSynchrTime() != null) {
+    must.add(m -> m.range(r -> r
+            .field(TIMESTAMP_FIELD)
+            .gte(JsonData.of(context.initSynchrTime().format(FORMATTER)))));
 }
 
-SELECT param_code, param_value, type
-FROM own_83650_muse.muse_request_parameters rp
-JOIN own_83650_muse.muse_client_references cr
-    ON rp.client_reference_id = cr.client_reference_id
-WHERE cr.client_label = 'APE_H'
-AND rp.type = 'ON_DEMAND_REQUEST';
+
+
+DemandHandlerImpl
+
+private String toHistoricalFileName(String onDemandFileName, String historicalDate) {
+    int dotIdx = onDemandFileName.lastIndexOf('.');
+    String base = (dotIdx > 0) ? onDemandFileName.substring(0, dotIdx) : onDemandFileName;
+    String ext  = (dotIdx > 0) ? onDemandFileName.substring(dotIdx) : ".req";
+
+    String historicalBase;
+    if (base.endsWith("_U") || base.endsWith("_I")) {
+        // Standard U/I pattern: strip suffix, add _H_<date>
+        historicalBase = base.substring(0, base.length() - 2) + "_H_" + historicalDate;
+    } else if (base.endsWith("_H")) {
+        // Template already ends with _H (e.g. DD_INPUT_APEM_H)
+        // Just append the date — no double _H_
+        historicalBase = base + "_" + historicalDate;
+    } else {
+        // Defensive fallback
+        historicalBase = base + "_H_" + historicalDate;
+    }
+    return historicalBase + ext;
+}
+
