@@ -1,1 +1,46 @@
+Part 1: Questions I Need to Ask First
+These aren't bureaucratic — each one genuinely changes the architecture. Let me explain what hinges on each:
+1. What's the actual daily exception volume?
+The deck never states it. This matters enormously:
 
+Under 500/day → you can afford LLM calls on every exception, even premium models
+500–5,000/day → you need tiered routing (cheap path for easy cases, expensive for hard ones)
+Over 5,000/day → you need a hybrid where most exceptions never touch an LLM at all
+
+My guess from the 35 m/d workload number is probably 1,000–3,000/day, but you should know the real figure.
+2. What latency is acceptable per exception?
+Pricing has hard deadlines — NAVs publish on a schedule. Is the agent expected to:
+
+Run in near-real-time (seconds), so operators see proposals as exceptions arrive?
+Run in batches (e.g., process the 2pm batch by 3pm)?
+Run overnight to pre-process for the next morning?
+
+Batch mode is dramatically simpler and cheaper to build.
+3. What LLM are you actually allowed to use?
+The Confluence page says "LLM@CIB API" — that's BNP's internal LLM service. Critical questions:
+
+Which models are available? GPT-4-class, Claude-class, or smaller?
+Is there function-calling / tool-use support, or just text completion?
+What's the rate limit?
+Can you fine-tune, or only prompt?
+
+Whether you have proper tool-use support changes the framework choice completely.
+4. What's the data sensitivity / compliance posture?
+
+Can exception data leave the BNP perimeter? (Probably no — hence LLM@CIB.)
+Are pricing decisions considered "automated decision-making" under regulation? (For some jurisdictions/clients, yes — which means hard explainability requirements.)
+Does every decision need a 7-year audit trail?
+
+5. What does "the team" actually know how to build?
+Be honest about this. The deck says "1 expert on Agentic AI" and "low experience — new technology." That's a huge constraint. If the team is mostly Java/Spring Boot/Sybase people:
+
+CrewAI (Python) means they're learning a new language and a new paradigm simultaneously
+A simpler, more explicit framework may actually ship faster
+
+6. How stable are the rules really?
+Do client pricing rules change monthly? Quarterly? Yearly? If rules change often, the architecture must make rule updates trivial (no code deploy). If rules are essentially frozen, you can hard-code more.
+7. What's the failure mode you're optimizing for?
+Two very different failure profiles:
+
+Type A: Agent validates a wrong price → published bad NAV → client incident, regulatory exposure
+Type B: Agent escalates correct prices to humans unnecessarily → no automation benefit
