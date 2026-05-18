@@ -334,15 +334,3 @@ The risks are real (capacity, key-person dependency, regulatory explainability, 
 
 Want me to go deeper on any specific piece — the rule codification, the prompts for each agent, the AMANDA integration, the governance and audit trail, or how to handle a specific tricky scenario like the DWS Bloomberg hierarchy?
 
-
-
-
-
-
-The log says OnDemand Flag For APE: NO. This means APE is not configured as an OnDemand client in muse_client_references. As a result diffusion is NOT auto-triggered after sync — you had to trigger it manually via Postman.
-For now this is fine for testing. But for production, either:
-
-APE needs is_on_demand_active = true in the client table, OR
-The triggerDiffusionIfUpdateSyncTypeAndOnDemandClient needs to also trigger for HISTORICAL regardless of the OnDemand flag
-
-Check with the team which approach is correct for Historical.
