@@ -1,67 +1,221 @@
-In DemandHandlerImpl.generateOutputResult, change this line:
-// BEFORE:
-if (isHistorical && !onDemandFileName.isEmpty()) {
-    onDemandFileName = toHistoricalFileName(onDemandFileName, historicalDate);
+// Load ALL request parameters once (existing behavior — keep for caching)
+List<RequestParametersDto> allRequestParametersDtos = requestParamService.findAll();
+
+for (JSONObject jsonObj : jsonObjectsOfScope) {
+    List<String> providerName = new ArrayList<>();
+    if ("Y".equals(jsonObj.get(STATIC_FLAG)) || "Y".equals(jsonObj.get(PRICE_FLAG))) {
+        providerName.add(BLOOMBERG);
+    }
+    if ("Y".equals(jsonObj.get(DERIVED_FLAG))) {
+        providerName.add(FACTSET);
+    }
+
+    // Filter request params to only those matching this security's client.
+    // Keeps client-specific rows (APE_H, IRP_BV_H) AND generic rows (FUNDS, DEFAULT, EQUITY, etc.)
+    String securityClient = (String) jsonObj.get(CLIENT);
+    List<RequestParametersDto> filteredParams = filterParamsForClient(
+            allRequestParametersDtos, securityClient);
+
+    OnDemandScopeDetailsDto onDemandScopeDetailsDto = OnDemandScopeDetailsDto.builder()
+            .headerParams(headerParams)
+            .fieldListByVacationName(fieldListByVacationName)
+            .feedInstrList(feedInstrList)
+            .instrumentCodesByInstrumentId(instrumentCodesByInstrumentId)
+            .vacConfigDetailsByVacName(vacConfigDetailsByVacName)
+            .item(jsonObj)
+            .onDemandVacationNamesById(onDemandVacationNamesById)
+            .requestParametersDtos(filteredParams)  // ← filtered list
+            .providerName(providerName)
+            .build();
+    dtoList.add(onDemandScopeDetailsDto);
 }
+Cleanest way it is. Here's the complete implementation.
 
-// AFTER:
-if (isHistorical && !onDemandFileName.isEmpty()) {
-    // Filename uses today's date (when request is generated).
-    // Historical date is stored INSIDE the file content (Date column).
-    onDemandFileName = toHistoricalFileName(onDemandFileName, today);
+---
+
+## Step 1 — Add repository method
+
+**`RequestParamRepository.java`** — add this method:
+
+```java
+List<RequestParameters> findByClientReferenceClientReferenceIdOrClientReferenceIsNull(Long clientReferenceId);
+```
+
+This Spring Data method name resolves to:
+```
+WHERE client_reference.client_reference_id = ?1 
+   OR client_reference IS NULL
+```
+
+It returns rows for the specific client AND generic rows (where `client_reference_id` is null, like the instrument-type rows for `EQUITY`, `FUNDS`, etc.).
+
+If the relationship field in `RequestParameters` entity is named differently, adjust accordingly. Show me `RequestParameters.java` if unsure — the property name matters for Spring Data method naming.
+
+---
+
+## Step 2 — Add service method
+
+**`RequestParamService.java`:**
+
+```java
+public interface RequestParamService {
+    List<RequestParametersDto> getByProviderID(Long provider_id);
+
+    List<RequestParametersDto> findAll();
+
+    /**
+     * Returns request parameters for a specific client plus generic rows
+     * (where client_reference_id is null — e.g. instrument-type codes,
+     * FUNDS, DEFAULT). Used by the OnDemand request flow to avoid mixing
+     * rows from other clients.
+     */
+    List<RequestParametersDto> findByClientReferenceIdOrGeneric(Long clientReferenceId);
 }
-HISTORICAL("HISTORICAL",
-        "muse-derived",
-        false,
-        IndexProcess::getDerivedProviderIdentifierField,   // reuse
-        IndexProcess::getDerivedClientIdentifierFields,    // reuse
-        DiffusionUtils::isNotSubscribedSecurityToDerived,
-        QueryBuilder::buildHistoricalQueries,              // NEW thin wrapper
-        null),
+```
 
-public static List<Query> buildDerivedQueries(JSONObject securityItem, String instrument) {
-    return buildDerivedQueries(securityItem, instrument, DERIVED_INDEX);
+**`RequestParamServiceImpl.java`:**
+
+```java
+@Override
+public List<RequestParametersDto> findByClientReferenceIdOrGeneric(Long clientReferenceId) {
+    List<RequestParameters> requestParameters =
+            requestParamRepository.findByClientReferenceClientReferenceIdOrClientReferenceIsNull(clientReferenceId);
+    return requestParameters.stream()
+            .map(p -> modelMapper.map(p, RequestParametersDto.class))
+            .toList();
 }
+```
 
-public static List<Query> buildHistoricalQueries(JSONObject securityItem, String instrument) {
-    return buildDerivedQueries(securityItem, instrument, HISTORICAL);
-}
+---
 
-private static List<Query> buildDerivedQueries(JSONObject securityItem, String instrument, 
-                                                 IndexProcess indexProcess) {
-    String providerIdentifierField = indexProcess.getProviderIdentifierField(instrument);
-    List<String> clientIdentifierFields = indexProcess.getClientIdentifierFields(instrument);
+## Step 3 — Update `OnDemandFeedDetailsRetriever`
 
-    BoolQuery.Builder identifierClause;
-    if (clientIdentifierFields.size() == 1) {
-        identifierClause = QueryBuilders.bool()
-                .must(matchPhrase(providerIdentifierField, 
-                        (String) securityItem.get(clientIdentifierFields.get(0))));
-    } else {
-        identifierClause = QueryBuilders.bool()
-                .should(matchPhrase(providerIdentifierField, 
-                        (String) securityItem.get(clientIdentifierFields.get(0))));
-        for (int i = 1; i < clientIdentifierFields.size(); i++) {
-            String clientIdField = clientIdentifierFields.get(i);
-            if (nonNull(securityItem.get(clientIdField)) 
-                    && isNotBlank(securityItem.get(clientIdField).toString())) {
-                identifierClause.should(matchPhrase(providerIdentifierField, 
-                        (String) securityItem.get(clientIdField)));
+```java
+@Log4j2
+@Service
+@RequiredArgsConstructor
+public class OnDemandFeedDetailsRetriever {
+
+    private final OnDemandRequestService onDemandRequestService;
+    private final InstrumentReferenceService instrumentReferenceService;
+    private final RequestParamService requestParamService;
+    private final ClientReferenceService clientReferenceService;  // ADD this dependency
+
+    public List<OnDemandScopeDetailsDto> getVacationDetails(
+            List<JSONObject> jsonObjectsOfScope, String syncFileName) {
+
+        List<OnDemandScopeDetailsDto> dtoList = new ArrayList<>();
+
+        Map<Integer, String> onDemandVacationNamesById = onDemandRequestService.getOnDemandVacationNamesById();
+        Map<String, List<Map<String, Integer>>> feedInstrList = getInstrSubInstMappingsByVacationName(onDemandVacationNamesById, syncFileName);
+        Map<String, JSONArray> headerParams = getHeaderParamsForVacation(onDemandVacationNamesById, syncFileName);
+        Map<String, List<String>> fieldListByVacationName = getFieldListForVacation(onDemandVacationNamesById);
+        Map<String, Map<String, String>> vacConfigDetailsByVacName = getVacConfigDetailsByVacName(onDemandVacationNamesById);
+        Map<Long, String> instrumentCodesByInstrumentId = instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId();
+
+        // Cache per-client params to avoid repeated DB queries when scope has many securities for the same client
+        Map<String, List<RequestParametersDto>> paramsByClient = new HashMap<>();
+
+        for (JSONObject jsonObj : jsonObjectsOfScope) {
+            List<String> providerName = new ArrayList<>();
+            if ("Y".equals(jsonObj.get(STATIC_FLAG)) || "Y".equals(jsonObj.get(PRICE_FLAG))) {
+                providerName.add(BLOOMBERG);
             }
+            if ("Y".equals(jsonObj.get(DERIVED_FLAG))) {
+                providerName.add(FACTSET);
+            }
+
+            // Filter request parameters to those for this security's client
+            // (plus generic rows where client_reference_id is null).
+            String securityClient = (String) jsonObj.get(CLIENT);
+            List<RequestParametersDto> clientParams = paramsByClient.computeIfAbsent(
+                    securityClient, this::loadParamsForClient);
+
+            OnDemandScopeDetailsDto onDemandScopeDetailsDto = OnDemandScopeDetailsDto.builder()
+                    .headerParams(headerParams)
+                    .fieldListByVacationName(fieldListByVacationName)
+                    .feedInstrList(feedInstrList)
+                    .instrumentCodesByInstrumentId(instrumentCodesByInstrumentId)
+                    .vacConfigDetailsByVacName(vacConfigDetailsByVacName)
+                    .item(jsonObj)
+                    .onDemandVacationNamesById(onDemandVacationNamesById)
+                    .requestParametersDtos(clientParams)
+                    .providerName(providerName)
+                    .build();
+            dtoList.add(onDemandScopeDetailsDto);
         }
+        return dtoList;
     }
 
-    BoolQuery.Builder finalBuilder = QueryBuilders.bool()
-            .must(identifierClause.build()._toQuery())
-            .must(matchPhrase(PROVIDER_DATATYPE, indexProcess.getIndexParam()));
-
-    // For HISTORICAL — add date filter to scope the query to the requested historical date
-    if (indexProcess == HISTORICAL) {
-        String historicalDate = (String) securityItem.get(HISTORICAL_DATE);
-        if (historicalDate != null && !historicalDate.trim().isEmpty()) {
-            finalBuilder.must(matchPhrase(HISTORICAL_DATE, historicalDate.trim()));
+    /**
+     * Loads request parameters scoped to the given client.
+     * Returns rows matching the client plus generic rows (where client_reference_id is null).
+     * Falls back to all rows if the client cannot be resolved.
+     */
+    private List<RequestParametersDto> loadParamsForClient(String clientName) {
+        if (clientName == null || clientName.isBlank()) {
+            return requestParamService.findAll();
         }
+        ClientReferenceDto clientRef = clientReferenceService.getForClientName(clientName);
+        if (clientRef == null) {
+            log.warn("No client reference found for '{}' — falling back to all request parameters", clientName);
+            return requestParamService.findAll();
+        }
+        return requestParamService.findByClientReferenceIdOrGeneric(clientRef.getId());
     }
 
-    return List.of(BoolQuery.of(b -> finalBuilder)._toQuery());
+    // ... rest of the methods unchanged
 }
+```
+
+---
+
+## Why this is the cleanest approach
+
+1. **One source of truth** — uses the actual `client_reference_id` FK in the database, not heuristic string matching on `param_code`
+2. **Includes generic rows** — `EQUITY`, `FUNDS`, `DEFAULT` params (where `client_reference_id IS NULL`) still work for all clients
+3. **Cached per request** — `paramsByClient` map avoids hitting the DB once per security if multiple securities belong to the same client
+4. **No code changes in `DemandHandlerImpl`** — the existing loop logic works correctly once the data is properly filtered upstream
+5. **Future-proof** — when new Historical clients are added (TPA_H, ESY_H, etc.) no code changes needed
+
+---
+
+## Verify with a quick test query
+
+Before relying on the new repository method, test it in DB:
+
+```sql
+-- All params for APE_H (should return APE_H rows + any generic null-client rows)
+SELECT * FROM own_83650_muse.muse_request_parameters
+WHERE client_reference_id = (
+    SELECT client_reference_id FROM own_83650_muse.muse_client_references 
+    WHERE client_label = 'APE_H'
+)
+OR client_reference_id IS NULL
+ORDER BY param_id;
+```
+
+This is exactly what the Spring Data method will execute. If it returns the right rows, you're good.
+
+---
+
+## After all the fixes
+
+Re-run the test. Expected results:
+
+```
+Sync MUSE_Sync_DAL_APE_H_20260519_011.csv with HISTORICAL_DATE=20260430
+  ↓
+.req filename: DD_INPUT_APEM_H_20260519-<uid>.req  (today's date ✅)
+  ↓
+.req content:  CA62930A1021;061;CAD;CA62930A1021-061;CA62930A1021-CAD;20260430;EQUITIES
+                                                     ↑ correct priceExpression  ↑ historical date
+  ↓
+Diffusion finds 15 securities under APE_H ✅
+  ↓
+Query uses HISTORICAL_DATE filter (Fix 3) ✅
+  ↓
+Output: MUSE_DD_H_Equities_APE_<ts>.csv with real Factset/Bloomberg data ✅
+```
+
+Apply all three fixes, rebuild, retest, and Process H is **fully production-ready**.
