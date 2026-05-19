@@ -1,1 +1,20 @@
 
+public String extractClient(String syncFileName) {
+    Matcher matcher = ON_DEMAND_FILENAME_PATTERN.matcher(syncFileName);
+    if (matcher.find()) {
+        String client = matcher.group(1);
+        String syncTypePart = matcher.group(2);
+
+        log.info("DEBUG extractClient: group1='{}', group2='{}', regex='{}'", 
+                 client, syncTypePart, ON_DEMAND_FILENAME_REGEX);
+
+        if ("_H_".equals(syncTypePart)) {
+            client = client + "_H";
+            log.info("DEBUG: Historical detected, client now = '{}'", client);
+        }
+
+        log.info("Extracted '{}' client Name for request file '{}'", client, syncFileName);
+        return client;
+    }
+    return "";
+}
