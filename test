@@ -1,20 +1,14 @@
+In DemandHandlerImpl.generateOutputResult, change this line:
+// BEFORE:
+if (isHistorical && !onDemandFileName.isEmpty()) {
+    onDemandFileName = toHistoricalFileName(onDemandFileName, historicalDate);
+}
 
-private String toHistoricalFileName(String onDemandFileName, String historicalDate) {
-    int dotIdx = onDemandFileName.lastIndexOf('.');
-    String base = (dotIdx > 0) ? onDemandFileName.substring(0, dotIdx) : onDemandFileName;
-    String ext  = (dotIdx > 0) ? onDemandFileName.substring(dotIdx) : ".req";
+// AFTER:
+if (isHistorical && !onDemandFileName.isEmpty()) {
+    // Filename uses today's date (when request is generated).
+    // Historical date is stored INSIDE the file content (Date column).
+    onDemandFileName = toHistoricalFileName(onDemandFileName, today);
+}
 
-    // Filename uses today's date (when the request is generated),
-    // not the historical date (which goes inside the request content).
-    String today = LocalDate.now().format(DATE_FORMATTER);
 
-    String historicalBase;
-    if (base.endsWith("_U") || base.endsWith("_I")) {
-        historicalBase = base.substring(0, base.length() - 2) + "_H_" + today;
-    } else if (base.endsWith("_H")) {
-        historicalBase = base + "_" + today;
-    } else {
-        historicalBase = base + "_H_" + today;
-    }
-    return historicalBase + ext;
-}DemandHandlerImpl.generateOutputResultDemandHandlerImpl.generateOutputResult — the full method, especially the priceExpression assignment
