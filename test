@@ -1,1 +1,220 @@
 
+import com.bnpp.itg.tas.ido.muse.data.dto.ClientReferenceDto;
+import com.bnpp.itg.tas.ido.muse.service.ClientReferenceService;
+import com.bnpp.itg.tas.ido.muse.service.InstrumentReferenceService;
+import com.bnpp.itg.tas.ido.muse.service.integration.RequestParamService;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.WARN)
+public class OnDemandFeedDetailsRetrieverTest {
+
+    public static final String PRICING_SOURCE = "PRICING_SOURCE";
+    public static final String FIELD_OVERRIDES = "FIELD_OVERRIDES";
+    public static final String FACTSET = "FACTSET";
+
+    @Mock
+    private OnDemandRequestService onDemandRequestService;
+
+    @Mock
+    private InstrumentReferenceService instrumentReferenceService;
+
+    @Mock
+    private RequestParamService requestParamService;
+
+    @Mock
+    private ClientReferenceService clientReferenceService;  // NEW
+
+    @InjectMocks
+    private OnDemandFeedDetailsRetriever onDemandFeedDetailsRetriever;
+
+    private Map<Integer, String> onDemandVacationNamesById;
+    private String syncFileName;
+    private List<JSONObject> jsonObjectsOfScope;
+    private List<Map<String, Integer>> instrSubInstMappings;
+    private List<HeaderParamDto> headerParamDtoList;
+    private List<String> fieldList;
+    private Map<Long, String> instrumentCodesByInstrumentId;
+    private Map<String, String> vacConfigDetails;
+
+    @BeforeEach
+    public void setUp() {
+        onDemandFeedDetailsRetriever = new OnDemandFeedDetailsRetriever(
+                onDemandRequestService,
+                instrumentReferenceService,
+                requestParamService,
+                clientReferenceService);  // NEW arg
+
+        onDemandVacationNamesById = new HashMap<>();
+        onDemandVacationNamesById.put(1, "DLAC");
+        onDemandVacationNamesById.put(2, "DMAC");
+        syncFileName = "TPA202506261759.U";
+        jsonObjectsOfScope = new ArrayList<>();
+        onDemandVacationNamesById = new HashMap<>();
+        instrSubInstMappings = new ArrayList<>();
+        headerParamDtoList = new ArrayList<>();
+        fieldList = new ArrayList<>();
+        instrumentCodesByInstrumentId = new HashMap<>();
+        vacConfigDetails = new HashMap<>();
+        JSONObject jsonObject = new JSONObject();
+        jsonObject.put(FIELD_OVERRIDES, PRICING_SOURCE);
+        jsonObjectsOfScope.add(jsonObject);
+        onDemandVacationNamesById.put(1, "DLAC");
+        instrSubInstMappings.add(new HashMap<>(Map.of("EQUITY", 1, "ETF", 1)));
+        HeaderParamDto headerParamDto = HeaderParamDto.builder().code("code").value("value").build();
+        headerParamDtoList.add(headerParamDto);
+        fieldList.add("ID_BB_GLOBAL");
+        fieldList.add("PX_LAST");
+        instrumentCodesByInstrumentId.put(1L, "EQY");
+        vacConfigDetails.put(FIELD_OVERRIDES, PRICING_SOURCE);
+    }
+
+    @Test
+    public void testGetVacationDetails() {
+        Map<String, List<Map<String, Integer>>> feedInstrList = new HashMap<>();
+        Map<String, JSONArray> headerParams = new HashMap<>();
+        Map<String, List<String>> fieldListByVacationName = new HashMap<>();
+        Map<String, Map<String, String>> vacConfigDetailsByVacName = new HashMap<>();
+        feedInstrList.put("DLAC", instrSubInstMappings);
+        headerParams.put("DLAC", new JSONArray());
+        fieldListByVacationName.put("DLAC", fieldList);
+        vacConfigDetailsByVacName.put("DLAC", vacConfigDetails);
+
+        when(onDemandRequestService.getOnDemandVacationNamesById()).thenReturn(onDemandVacationNamesById);
+        when(onDemandRequestService.getInstrumentAndSubInstMappingsByVacationId(anyInt())).thenReturn(instrSubInstMappings);
+        when(onDemandRequestService.getHeaderParams(any())).thenReturn(headerParamDtoList);
+        when(onDemandRequestService.getVacationFields(any(), eq(true))).thenReturn(fieldList);
+        when(onDemandRequestService.getVacConfigByVacRefId(anyInt())).thenReturn(vacConfigDetails);
+        when(instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId()).thenReturn(instrumentCodesByInstrumentId);
+        // Default behavior: no client in scope item, falls back to findAll()
+        when(requestParamService.findAll()).thenReturn(Collections.emptyList());
+
+        List<OnDemandScopeDetailsDto> result = onDemandFeedDetailsRetriever.getVacationDetails(jsonObjectsOfScope, syncFileName);
+        assertNotNull(result);
+        assertEquals(1, result.size());
+        OnDemandScopeDetailsDto dto = result.get(0);
+        assertNotNull(dto);
+        assertEquals(onDemandVacationNamesById, dto.getOnDemandVacationNamesById());
+        assertEquals(feedInstrList, dto.getFeedInstrList());
+        assertEquals(fieldListByVacationName, dto.getFieldListByVacationName());
+        assertEquals(instrumentCodesByInstrumentId, dto.getInstrumentCodesByInstrumentId());
+        assertEquals(vacConfigDetailsByVacName, dto.getVacConfigDetailsByVacName());
+        assertEquals(jsonObjectsOfScope.get(0), dto.getItem());
+    }
+
+    @Test
+    public void testProviderSelection() {
+        JSONObject json = new JSONObject();
+        json.put("STATIC_FLAG", "Y");
+        json.put("DERIVED_FLAG", "Y");
+        List<JSONObject> scope = Collections.singletonList(json);
+
+        when(onDemandRequestService.getOnDemandVacationNamesById()).thenReturn(onDemandVacationNamesById);
+        when(onDemandRequestService.getInstrumentAndSubInstMappingsByVacationId(anyInt())).thenReturn(instrSubInstMappings);
+        when(onDemandRequestService.getHeaderParams(any())).thenReturn(headerParamDtoList);
+        when(onDemandRequestService.getVacationFields(any(), eq(true))).thenReturn(fieldList);
+        when(onDemandRequestService.getVacConfigByVacRefId(anyInt())).thenReturn(vacConfigDetails);
+        when(instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId()).thenReturn(instrumentCodesByInstrumentId);
+        when(requestParamService.findAll()).thenReturn(Collections.emptyList());
+
+        List<OnDemandScopeDetailsDto> result = onDemandFeedDetailsRetriever.getVacationDetails(scope, syncFileName);
+        OnDemandScopeDetailsDto dto = result.get(0);
+        assertEquals(Arrays.asList("BLOOMBERG", FACTSET), dto.getProviderName());
+    }
+
+    @Test
+    public void testHeaderParamsForFactSetVacation() {
+        onDemandVacationNamesById.clear();
+        onDemandVacationNamesById.put(3, FACTSET);
+        JSONObject json = new JSONObject();
+        json.put(FIELD_OVERRIDES, PRICING_SOURCE);
+        List<JSONObject> scope = Collections.singletonList(json);
+
+        when(onDemandRequestService.getOnDemandVacationNamesById()).thenReturn(onDemandVacationNamesById);
+        when(onDemandRequestService.getInstrumentAndSubInstMappingsByVacationId(anyInt())).thenReturn(instrSubInstMappings);
+        when(onDemandRequestService.getHeaderParams(any())).thenReturn(headerParamDtoList);
+        when(onDemandRequestService.getVacationFields(any(), eq(true))).thenReturn(fieldList);
+        when(onDemandRequestService.getVacConfigByVacRefId(anyInt())).thenReturn(vacConfigDetails);
+        when(instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId()).thenReturn(instrumentCodesByInstrumentId);
+        when(requestParamService.findAll()).thenReturn(Collections.emptyList());
+
+        List<OnDemandScopeDetailsDto> result = onDemandFeedDetailsRetriever.getVacationDetails(scope, syncFileName);
+        OnDemandScopeDetailsDto dto = result.get(0);
+        JSONArray headerArray = dto.getHeaderParams().get(FACTSET);
+        assertEquals(1, headerArray.size());
+        JSONObject firstHeader = (JSONObject) headerArray.get(0);
+        assertFalse(firstHeader.containsKey("value"));
+    }
+
+    @Test
+    public void testEmptyInstrumentMappingIsOmitted() {
+        when(onDemandRequestService.getInstrumentAndSubInstMappingsByVacationId(anyInt())).thenReturn(Collections.emptyList());
+        when(onDemandRequestService.getOnDemandVacationNamesById()).thenReturn(onDemandVacationNamesById);
+        when(onDemandRequestService.getHeaderParams(any())).thenReturn(headerParamDtoList);
+        when(onDemandRequestService.getVacationFields(any(), eq(true))).thenReturn(fieldList);
+        when(onDemandRequestService.getVacConfigByVacRefId(anyInt())).thenReturn(vacConfigDetails);
+        when(instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId()).thenReturn(instrumentCodesByInstrumentId);
+        when(requestParamService.findAll()).thenReturn(Collections.emptyList());
+
+        List<OnDemandScopeDetailsDto> result = onDemandFeedDetailsRetriever.getVacationDetails(jsonObjectsOfScope, syncFileName);
+        OnDemandScopeDetailsDto dto = result.get(0);
+        assertTrue(dto.getFeedInstrList().isEmpty());
+    }
+
+    @Test
+    public void testRequestParamsFilteredForHistoricalClient() {
+        // Scope item with HISTORICAL client APE_H — should use findByClientReferenceIdOrGeneric, not findAll
+        JSONObject json = new JSONObject();
+        json.put("CLIENT", "APE_H");
+        json.put("STATIC_FLAG", "Y");
+        List<JSONObject> scope = Collections.singletonList(json);
+
+        ClientReferenceDto apeHRef = ClientReferenceDto.builder()
+                .id(14L)
+                .clientLabel("APE_H")
+                .build();
+
+        when(onDemandRequestService.getOnDemandVacationNamesById()).thenReturn(onDemandVacationNamesById);
+        when(onDemandRequestService.getInstrumentAndSubInstMappingsByVacationId(anyInt())).thenReturn(instrSubInstMappings);
+        when(onDemandRequestService.getHeaderParams(any())).thenReturn(headerParamDtoList);
+        when(onDemandRequestService.getVacationFields(any(), eq(true))).thenReturn(fieldList);
+        when(onDemandRequestService.getVacConfigByVacRefId(anyInt())).thenReturn(vacConfigDetails);
+        when(instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId()).thenReturn(instrumentCodesByInstrumentId);
+        when(clientReferenceService.getForClientName("APE_H")).thenReturn(apeHRef);
+        when(requestParamService.findByClientReferenceIdOrGeneric(14L)).thenReturn(Collections.emptyList());
+
+        List<OnDemandScopeDetailsDto> result = onDemandFeedDetailsRetriever.getVacationDetails(scope, syncFileName);
+
+        assertNotNull(result);
+        assertEquals(1, result.size());
+        // Verify the client-specific method was used, not findAll
+        verify(requestParamService).findByClientReferenceIdOrGeneric(14L);
+        verify(requestParamService, never()).findAll();
+    }
+
+    @Test
+    public void testRequestParamsFallsBackToFindAllWhenClientUnknown() {
+        // Scope item with unknown client — should fall back to findAll
+        JSONObject json = new JSONObject();
+        json.put("CLIENT", "UNKNOWN_CLIENT");
+        json.put("STATIC_FLAG", "Y");
+        List<JSONObject> scope = Collections.singletonList(json);
+
+        when(onDemandRequestService.getOnDemandVacationNamesById()).thenReturn(onDemandVacationNamesById);
+        when(onDemandRequestService.getInstrumentAndSubInstMappingsByVacationId(anyInt())).thenReturn(instrSubInstMappings);
+        when(onDemandRequestService.getHeaderParams(any())).thenReturn(headerParamDtoList);
+        when(onDemandRequestService.getVacationFields(any(), eq(true))).thenReturn(fieldList);
+        when(onDemandRequestService.getVacConfigByVacRefId(anyInt())).thenReturn(vacConfigDetails);
+        when(instrumentReferenceService.getAllValidInstrumentCodeByInstrumentId()).thenReturn(instrumentCodesByInstrumentId);
+        when(clientReferenceService.getForClientName("UNKNOWN_CLIENT")).thenReturn(null);
+        when(requestParamService.findAll()).thenReturn(Collections.emptyList());
+
+        List<OnDemandScopeDetailsDto> result = onDemandFeedDetailsRetriever.getVacationDetails(scope, syncFileName);
+
+        assertNotNull(result);
+        verify(requestParamService).findAll();
+        verify(requestParamService, never()).findByClientReferenceIdOrGeneric(anyLong());
+    }
+}
