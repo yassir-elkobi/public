@@ -10,5 +10,58 @@ if (isHistorical && !onDemandFileName.isEmpty()) {
     // Historical date is stored INSIDE the file content (Date column).
     onDemandFileName = toHistoricalFileName(onDemandFileName, today);
 }
+HISTORICAL("HISTORICAL",
+        "muse-derived",
+        false,
+        IndexProcess::getDerivedProviderIdentifierField,   // reuse
+        IndexProcess::getDerivedClientIdentifierFields,    // reuse
+        DiffusionUtils::isNotSubscribedSecurityToDerived,
+        QueryBuilder::buildHistoricalQueries,              // NEW thin wrapper
+        null),
 
+public static List<Query> buildDerivedQueries(JSONObject securityItem, String instrument) {
+    return buildDerivedQueries(securityItem, instrument, DERIVED_INDEX);
+}
 
+public static List<Query> buildHistoricalQueries(JSONObject securityItem, String instrument) {
+    return buildDerivedQueries(securityItem, instrument, HISTORICAL);
+}
+
+private static List<Query> buildDerivedQueries(JSONObject securityItem, String instrument, 
+                                                 IndexProcess indexProcess) {
+    String providerIdentifierField = indexProcess.getProviderIdentifierField(instrument);
+    List<String> clientIdentifierFields = indexProcess.getClientIdentifierFields(instrument);
+
+    BoolQuery.Builder identifierClause;
+    if (clientIdentifierFields.size() == 1) {
+        identifierClause = QueryBuilders.bool()
+                .must(matchPhrase(providerIdentifierField, 
+                        (String) securityItem.get(clientIdentifierFields.get(0))));
+    } else {
+        identifierClause = QueryBuilders.bool()
+                .should(matchPhrase(providerIdentifierField, 
+                        (String) securityItem.get(clientIdentifierFields.get(0))));
+        for (int i = 1; i < clientIdentifierFields.size(); i++) {
+            String clientIdField = clientIdentifierFields.get(i);
+            if (nonNull(securityItem.get(clientIdField)) 
+                    && isNotBlank(securityItem.get(clientIdField).toString())) {
+                identifierClause.should(matchPhrase(providerIdentifierField, 
+                        (String) securityItem.get(clientIdField)));
+            }
+        }
+    }
+
+    BoolQuery.Builder finalBuilder = QueryBuilders.bool()
+            .must(identifierClause.build()._toQuery())
+            .must(matchPhrase(PROVIDER_DATATYPE, indexProcess.getIndexParam()));
+
+    // For HISTORICAL — add date filter to scope the query to the requested historical date
+    if (indexProcess == HISTORICAL) {
+        String historicalDate = (String) securityItem.get(HISTORICAL_DATE);
+        if (historicalDate != null && !historicalDate.trim().isEmpty()) {
+            finalBuilder.must(matchPhrase(HISTORICAL_DATE, historicalDate.trim()));
+        }
+    }
+
+    return List.of(BoolQuery.of(b -> finalBuilder)._toQuery());
+}
