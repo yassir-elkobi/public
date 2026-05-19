@@ -1,1 +1,8 @@
-public static final String ON_DEMAND_FILENAME_REGEX = "MUSE_Sync_DAL_(.*?)(_U_|_I_|_H_)";
+UPDATE own_83650_muse.muse_diffusion_client_field_mappings
+SET data_format = 'dd/MM/yyyy',
+    updated_at = current_timestamp
+WHERE data_format = 'dd/mm/yyyy'
+AND data_type = 'DATETIME';SELECT field_mapping_id, field_name, data_type, data_format, diffused_data
+FROM own_83650_muse.muse_diffusion_client_field_mappings
+WHERE data_format = 'dd/mm/yyyy'
+AND data_type = 'DATETIME';
