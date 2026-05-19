@@ -1,18 +1,18 @@
-
 public String extractClient(String syncFileName) {
+    log.error("###### DEBUG extractClient CALLED with: {} ######", syncFileName);
     Matcher matcher = ON_DEMAND_FILENAME_PATTERN.matcher(syncFileName);
     if (matcher.find()) {
         String client = matcher.group(1);
-        String syncTypePart = matcher.group(2);
-
-        log.info("DEBUG extractClient: group1='{}', group2='{}', regex='{}'", 
-                 client, syncTypePart, ON_DEMAND_FILENAME_REGEX);
-
+        String syncTypePart = matcher.groupCount() >= 2 ? matcher.group(2) : null;
+        
+        log.error("###### group(1)='{}', group(2)='{}', groupCount={} ######", 
+                  client, syncTypePart, matcher.groupCount());
+        
         if ("_H_".equals(syncTypePart)) {
             client = client + "_H";
-            log.info("DEBUG: Historical detected, client now = '{}'", client);
+            log.error("###### Historical applied, client='{}' ######", client);
         }
-
+        
         log.info("Extracted '{}' client Name for request file '{}'", client, syncFileName);
         return client;
     }
