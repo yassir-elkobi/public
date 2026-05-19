@@ -1,1 +1,55 @@
-The sync and diffusion flow works without an entry in muse_synchronization_configs. Is this table required for Process H, and if so what exact values should I insert?
+--liquibase formatted sql
+--changeset Yassir:muse_synchronization_configs_historical splitStatements:true endDelimiter:;
+
+-- APE_H Historical synchronization config
+INSERT INTO own_83650_muse.muse_synchronization_configs
+    (client_reference_id, filename_pattern, sync_type, user_name, created_at, updated_at)
+SELECT
+    cr.client_reference_id,
+    '^MUSE_Sync_DAL_APE_H_[0-9]+_[0-9]+\.csv$',
+    'HISTORICAL',
+    'MUSE_INIT',
+    current_timestamp,
+    current_timestamp
+FROM own_83650_muse.muse_client_references cr
+WHERE cr.client_label = 'APE_H'
+AND NOT EXISTS (
+    SELECT 1 FROM own_83650_muse.muse_synchronization_configs sc
+    JOIN own_83650_muse.muse_client_references cr2
+        ON sc.client_reference_id = cr2.client_reference_id
+    WHERE cr2.client_label = 'APE_H'
+    AND sc.sync_type = 'HISTORICAL'
+);
+
+-- IRP_BV_H Historical synchronization config
+INSERT INTO own_83650_muse.muse_synchronization_configs
+    (client_reference_id, filename_pattern, sync_type, user_name, created_at, updated_at)
+SELECT
+    cr.client_reference_id,
+    '^MUSE_Sync_DAL_IRP_BV_H_[0-9]+_[0-9]+\.csv$',
+    'HISTORICAL',
+    'MUSE_INIT',
+    current_timestamp,
+    current_timestamp
+FROM own_83650_muse.muse_client_references cr
+WHERE cr.client_label = 'IRP_BV_H'
+AND NOT EXISTS (
+    SELECT 1 FROM own_83650_muse.muse_synchronization_configs sc
+    JOIN own_83650_muse.muse_client_references cr2
+        ON sc.client_reference_id = cr2.client_reference_id
+    WHERE cr2.client_label = 'IRP_BV_H'
+    AND sc.sync_type = 'HISTORICAL'
+);
+
+
+
+
+src/main/resources/db/changes/muse_synchronization_configs_historical.sql
+
+
+SELECT sc.sync_config_id, cr.client_label, 
+       sc.filename_pattern, sc.sync_type
+FROM own_83650_muse.muse_synchronization_configs sc
+JOIN own_83650_muse.muse_client_references cr
+    ON sc.client_reference_id = cr.client_reference_id
+WHERE sc.sync_type = 'HISTORICAL';
