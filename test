@@ -1,1 +1,28 @@
+private JSONObject buildMissingSecurity(JSONObject security, String productCode) {
+    JSONObject missingSecurity = new JSONObject();
+    missingSecurity.put(MISSING_FIELD_INTERNAL_ID, security.get(INTERNAL_IDENTIFIER));
+    missingSecurity.put(MISSING_FIELD_ISIN, security.get(SECURITY_IDENTIFIER));
+    missingSecurity.put(MISSING_FIELD_MARKET_PLACE, security.get(MARKET_PLACE));
+    missingSecurity.put(MISSING_FIELD_PRODUCT_CODE, productCode);
+    missingSecurity.put(MISSING_FIELD_AMANDA_CURRENCY, security.get(CURRENCY));
+    missingSecurity.put(MISSING_FIELD_NOVAL, security.get(NOVAL));
+    missingSecurity.put(MISSING_FIELD_SEDOL_HIPORT, security.get(SEDOL_HIPORT));
+    missingSecurity.put(MISSING_FIELD_HP_SYDNEY, security.get(HP_SYDNEY_ID));
+    missingSecurity.put(MISSING_FIELD_DIMENSION, security.get(DIMENSION_ID));
+    missingSecurity.put(MISSING_FIELD_TICKER, (StringUtils.isEmpty((String) security.get(TICKER))
+            ? security.get(BLOOM_LUX_FO) : security.get(TICKER)));
+    missingSecurity.put(MISSING_FIELD_FACTSET, (StringUtils.isEmpty((String) security.get(FACTSET_ID))
+            ? security.get(FACTSET_LUX_FO) : security.get(FACTSET_ID)));
+    missingSecurity.put(MISSING_FIELD_COMMENT, MISSING_COMMENT);
 
+    boolean isDerived = YES_FLAG.equalsIgnoreCase(Objects.toString(security.get(DERIVED_FLAG), null));
+    if (isDerived) {
+        // Read actual HISTORICAL_DATE from the security scope item
+        // For normal DERIVED flow: value will be null/empty → empty string
+        // For HISTORICAL flow: value will be "20260430" → populated correctly
+        String historicalDate = Objects.toString(security.get(HISTORICAL_DATE), StringUtils.EMPTY);
+        missingSecurity.put(HISTORICAL_DATE, historicalDate);
+    }
+
+    return missingSecurity;
+}
