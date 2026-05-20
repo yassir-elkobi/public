@@ -1,2 +1,1 @@
-SELECT * FROM own_83650_muse.muse_sub_instrument_references
-ORDER BY id;
+
