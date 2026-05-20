@@ -1,1 +1,34 @@
+// Public entry — DERIVED flow
+public static List<Query> buildDerivedQueries(JSONObject securityItem, String instrument) {
+    return buildDerivedQueries(securityItem, instrument, DERIVED_INDEX);
+}
+
+// Public entry — HISTORICAL flow
+public static List<Query> buildHistoricalQueries(JSONObject securityItem, String instrument) {
+    return buildDerivedQueries(securityItem, instrument, HISTORICAL);
+}
+
+// Shared private implementation
+private static List<Query> buildDerivedQueries(JSONObject securityItem, String instrument, 
+                                                 IndexProcess indexProcess) {
+    // ... existing logic with the HISTORICAL date filter
+}
+
+HISTORICAL("HISTORICAL",
+        "muse-derived",
+        false,
+        IndexProcess::getDerivedProviderIdentifierField,
+        IndexProcess::getDerivedClientIdentifierFields,
+        DiffusionUtils::isNotSubscribedSecurityToDerived,
+        QueryBuilder::buildHistoricalQueries,    // ← changed from buildDerivedQueries
+        null),
+
+DERIVED_INDEX("DERIVED",
+        "muse-derived",
+        false,
+        IndexProcess::getDerivedProviderIdentifierField,
+        IndexProcess::getDerivedClientIdentifierFields,
+        DiffusionUtils::isNotSubscribedSecurityToDerived,
+        QueryBuilder::buildDerivedQueries,       // unchanged
+        null),
 
