@@ -1,1 +1,11 @@
+What's the actual auto-approve target rate by Year 1 / Year 2 / Year 3? This determines whether the FTE business case is conservative or aggressive.
+What's the policy lifecycle? When a new fund/client onboards, who creates the new pricing policy YAML? How long until it's eligible for auto-approval? This is the operational onboarding question.
+What's the policy for "policies the agent has never seen"? Default to 100% HITL until N successful approvals? Or block the policy entirely until reviewed?
+Are there any "always HITL" policies? Regulatory or client-mandated — some funds may require human review for every exception regardless of confidence. Need to know upfront.
 
+Is Temporal available in BNP infrastructure? If not, what durable workflow option exists?
+What's the integration model with AMANDA — direct DB read, REST API, Kafka topic? Determines the intake design.
+Who owns rule authoring day-to-day — ops, ADM, or a hybrid? Determines the UI design.
+What's the existing audit/evidence storage standard at BNP? Reuse if possible; don't reinvent.
+How does this integrate with AEX (the new Amanda model)? Critical — if AEX is rewriting Amanda anyway, this work should be designed to ride on AEX, not be retrofit later.
+Is there a "Phase 0" budget for the Rule Repository product itself, separate from the AI work? If yes, that's the right place to start funding.
