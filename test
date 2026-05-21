@@ -36,3 +36,6 @@ for (RequestParametersDto rp : item.getRequestParametersDtos()) {
     }
 }
 
+SELECT param_code, param_value, type, client_reference_id
+FROM own_83650_muse.muse_request_parameters
+WHERE param_code = '20_PE';
