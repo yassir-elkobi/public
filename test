@@ -1,9 +1,38 @@
-SELECT param_code, param_value, type
-FROM own_83650_muse.muse_request_parameters
-WHERE type = 'PRICE_EXPRESSION'
-OR param_code LIKE '%PRICE%'
-OR param_code = '20'
-OR param_value = 'U'
-LIMIT 20;
-SELECT DISTINCT type 
-FROM own_83650_muse.muse_request_parameters;
+for (RequestParametersDto rp : item.getRequestParametersDtos()) {
+    if (rp.getType() != FileType.ON_DEMAND_REQUEST) {
+        continue;
+    }
+    code = rp.getParamCode();
+    String value = rp.getParamValue();
+
+    if (code == null || value == null) continue;
+
+    if (code.equalsIgnoreCase(data)) {
+        // Instrument-type identifier mapping
+        identifiers.add(value);
+
+    } else if (code.equalsIgnoreCase(client)) {
+        // Client-specific mappings
+        if (value.startsWith("DD")) {
+            onDemandFileName = value;
+        } else if (value.startsWith("BP2S")) {
+            outputFileName = value;
+        }
+
+    } else if (FUNDS.equalsIgnoreCase(code) && UCITS_UNIT.equalsIgnoreCase(data)) {
+        instrumentType = value;
+
+    } else {
+        // Price expression mapping: param_code = "<priceExpr>_PE"
+        String itemPriceExpr = Objects.toString(
+                item.getItem().get(PRICE_EXPRESSION), "").trim();
+        String expectedPeCode = itemPriceExpr + "_PE";
+
+        if (!itemPriceExpr.isEmpty() && code.equalsIgnoreCase(expectedPeCode)) {
+            priceExpression = value;  // "20_PE" matches → priceExpression = "U" ✅
+        } else if (DEFAULT.equalsIgnoreCase(code) && priceExpression.isEmpty()) {
+            priceExpression = value;  // fallback default
+        }
+    }
+}
+
