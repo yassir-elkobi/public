@@ -1,1 +1,9 @@
-
+SELECT param_code, param_value, type
+FROM own_83650_muse.muse_request_parameters
+WHERE type = 'PRICE_EXPRESSION'
+OR param_code LIKE '%PRICE%'
+OR param_code = '20'
+OR param_value = 'U'
+LIMIT 20;
+SELECT DISTINCT type 
+FROM own_83650_muse.muse_request_parameters;
