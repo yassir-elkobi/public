@@ -1,7 +1,1 @@
-GET muse-client-scope/_search
-{
-  "query": { "match_phrase": { "CLIENT": "APE_H" } }
-}
 
-
-Show me the scope doc _source after step 3 and I'll confirm whether the ensureComputedFields fix is needed before you run diffusion.
