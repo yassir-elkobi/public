@@ -1,1 +1,36 @@
+private SearchRequest buildSearchRequest(SecurityItem item, IndexProcess index, String instrument) {
+    List<Query> queries = index.buildProviderQueries(item.getSecurity(), instrument);
+    Query boolQuery = BoolQuery.of(b -> b.must(queries))._toQuery();
+    SearchRequest req = SearchRequest.of(s -> s
+            .query(boolQuery)
+            .index(index.getEsIndexName())
+            .sort(so -> so.field(f -> f.field(TIMESTAMP_FIELD).order(SortOrder.Desc)))
+            .size(1));
+    
+    log.info("HISTORICAL search query: {}", req.query());  // TEMP — dump the query
+    return req;
+}
+
+
+GET muse-derived/_mapping
+
+
+POST muse-derived/_doc
+{
+  "SECURITY_IDENTIFIER": "CA62930A1021",
+  "MARKET_PLACE": "061",
+  "Isin_Market": "CA62930A1021_061",
+  "CURRENCY": "CAD",
+  "INSTRUMENT": "EQUITY",
+  "CLIENT": "APE_H",
+  "HISTORICAL_DATE": "20260430",
+  "PROVIDER_DATATYPE": "HISTORICAL",
+  "@timestamp": "2026-04-30T12:00:00.000Z"
+}
+
+
+
+GET muse-derived/_search
+{ "query": { "match_phrase": { "CLIENT": "APE_H" } } }
+
 
