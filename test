@@ -1,23 +1,18 @@
-private List<JSONObject> executeMultiSearch(List<SearchRequest> requests, String indexName) throws IOException {
-    MsearchResponse<?> response = elasticsearchService.multiSearch(requests, indexName);
-    if (response == null) return Collections.emptyList();
-
-    // TEMP diagnostic — remove after debugging
-    response.responses().forEach(item -> {
-        if (item.isFailure()) {
-            log.warn("MSEARCH FAILURE: {}", item.failure().error().reason());
-        } else {
-            log.info("MSEARCH hit count: {}", item.result().hits().hits().size());
-        }
-    });
-
-    return response.responses().stream()
-            .filter(item -> !item.isFailure())
-            .flatMap(item -> item.result().hits().hits().stream())
-            .map(hit -> (JSONObject) ((Hit<JsonData>) hit).source())
-            .filter(Objects::nonNull)
-            .collect(Collectors.toList());
+GET muse-derived/_search
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "bool": {
+            "must": [
+              { "match_phrase": { "Isin_Market": "CA62930A1021_061" } }
+            ]
+          }
+        },
+        { "match_phrase": { "PROVIDER_DATATYPE": "HISTORICAL" } },
+        { "match_phrase": { "HISTORICAL_DATE": "20260430" } }
+      ]
+    }
+  }
 }
-
-
-log.info("fetchHitsPerItem index={}, esIndexName={}", index.name(), index.getEsIndexName());
