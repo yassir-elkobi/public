@@ -1,18 +1,1 @@
-GET muse-derived/_search
-{
-  "query": {
-    "bool": {
-      "must": [
-        {
-          "bool": {
-            "must": [
-              { "match_phrase": { "Isin_Market": "CA62930A1021_061" } }
-            ]
-          }
-        },
-        { "match_phrase": { "PROVIDER_DATATYPE": "HISTORICAL" } },
-        { "match_phrase": { "HISTORICAL_DATE": "20260430" } }
-      ]
-    }
-  }
-}
+
