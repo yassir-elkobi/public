@@ -1,1 +1,13 @@
+private static List<Query> buildDerivedFamilyQueries(JSONObject securityItem, String instrument,
+                                                     IndexProcess indexProcess) {
+    String providerIdentifierField = indexProcess.getProviderIdentifierField(instrument);
+    List<String> clientIdentifierFields = indexProcess.getClientIdentifierFields(instrument);
+
+    if (indexProcess == HISTORICAL) {
+        log.info("HISTORICAL query: providerField={}, clientFields={}, ISIN_MARKET value={}, HISTORICAL_DATE={}",
+                providerIdentifierField, clientIdentifierFields,
+                securityItem.get(ISIN_MARKET), securityItem.get(HISTORICAL_DATE));
+    }
+    // ... rest
+}
 
