@@ -1,1 +1,36 @@
+private static List<Query> buildDerivedFamilyQueries(JSONObject securityItem, String instrument,
+                                                     IndexProcess indexProcess) {
+    // Isin_Market and Isin_Currency are computed in memory during scope read
+    // but not persisted to muse-client-scope. Compute them here so the query
+    // can use them as identifiers.
+    ensureComputedIdentifiers(securityItem);
 
+    String providerIdentifierField = indexProcess.getProviderIdentifierField(instrument);
+    List<String> clientIdentifierFields = indexProcess.getClientIdentifierFields(instrument);
+
+    BoolQuery.Builder query = QueryBuilders.bool()
+            .must(buildIdentifierClause(securityItem, providerIdentifierField, clientIdentifierFields))
+            .must(matchPhrase(PROVIDER_DATATYPE, indexProcess.getIndexParam()));
+
+    if (indexProcess == HISTORICAL) {
+        addHistoricalDateFilter(query, securityItem);
+    }
+    return List.of(query.build()._toQuery());
+}
+
+private static void ensureComputedIdentifiers(JSONObject securityItem) {
+    if (securityItem.get(ISIN_MARKET) == null) {
+        String isin = Objects.toString(securityItem.get(SECURITY_IDENTIFIER), "");
+        String market = Objects.toString(securityItem.get(MARKET_PLACE), "");
+        if (!isin.isEmpty() && !market.isEmpty()) {
+            securityItem.put(ISIN_MARKET, isin + "_" + market);
+        }
+    }
+    if (securityItem.get(ISIN_CURRENCY) == null) {
+        String isin = Objects.toString(securityItem.get(SECURITY_IDENTIFIER), "");
+        String currency = Objects.toString(securityItem.get(CURRENCY), "");
+        if (!isin.isEmpty() && !currency.isEmpty()) {
+            securityItem.put(ISIN_CURRENCY, isin + "_" + currency);
+        }
+    }
+}
