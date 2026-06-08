@@ -6,14 +6,13 @@ public Map<String, List<JSONObject>> enrichProcessedItem(
         JSONObject entry,
         Map<String, List<JSONObject>> indexDocumentsMap,
         Map<String, String> charsetConversionValue,
+        String fileName,
         long integrationId) {
     try {
         dataIndexMapping.forEach(dto -> {
             indexDocumentsMap
                     .computeIfAbsent(dto.getIndexName(), k -> new ArrayList<>())
                     .add(entry);
-            // dto-scope fix: stamp PROVIDER_DATATYPE on the entry directly,
-            // not via a nested values().forEach (which over-stamps across all entries)
             entry.put(PROVIDER_DATATYPE, dto.getDataType());
         });
     } catch (Exception e) {
@@ -22,6 +21,3 @@ public Map<String, List<JSONObject>> enrichProcessedItem(
     }
     return indexDocumentsMap;
 }
-
-
-
