@@ -1,88 +1,5 @@
-
-SynchronizationSecurity
-// AMANDA sync file delivers the column header as "historicalDate" (camelCase)
-@JsonProperty("historicalDate")
-private String historicalDate;
-
-
-
-OnDemandRequestConstants
-
-// ES field name + internal map key — validated working in muse-derived queries.
-// Do NOT change this; buildHistoricalQueries and the scope template depend on it.
-public static final String HISTORICAL_DATE = "HISTORICAL_DATE";
-
-// Vendor/file header label (sync file + ondemand request + diffusion output column).
-// Space, not underscore — this is the human-readable header AMANDA/Factset expect.
-public static final String HISTORICAL_DATE_HEADER = "HISTORICAL DATE";
-
-
-
-DerivedDataExistenceCheckerImpl
-
-package com.bnpp.itg.tas.ido.muse.service.ondemandrequest;
-
-import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
-import com.bnpp.itg.tas.ido.muse.service.scopesynchro.elasticsearch.ElasticsearchService;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.log4j.Log4j2;
-import org.apache.commons.lang3.StringUtils;
-import org.springframework.stereotype.Service;
-
-import static com.bnpp.itg.tas.ido.muse.data.constants.ClientScopeConstants.ISIN_MARKET;
-import static com.bnpp.itg.tas.ido.muse.data.constants.ElasticsearchFieldsConstants.PROVIDER_DATATYPE;
-import static com.bnpp.itg.tas.ido.muse.data.constants.OnDemandRequestConstants.DERIVED_INDEX_NAME;
-import static com.bnpp.itg.tas.ido.muse.data.constants.OnDemandRequestConstants.HISTORICAL_DATE;
-
-@Service
-@RequiredArgsConstructor
-@Log4j2
-public class DerivedDataExistenceCheckerImpl implements DerivedDataExistenceChecker {
-
-    private static final String HISTORICAL_DATATYPE = "HISTORICAL";
-
-    private final ElasticsearchService elasticsearchService;
-
-    @Override
-    public boolean hasDerivedDataFor(String securityId, String marketPlace, String historicalDate) {
-        if (isAnyArgumentMissing(securityId, marketPlace, historicalDate)) {
-            return false;
-        }
-        try {
-            BoolQuery query = buildExistenceQuery(securityId, marketPlace, historicalDate);
-            long count = elasticsearchService.countForBoolQuery(query, DERIVED_INDEX_NAME);
-            return count > 0;
-        } catch (Exception e) {
-            // Fail-open: an infrastructure error must not silently drop securities.
-            log.error("Existence check failed for security={}, market={}, date={} - failing open",
-                    securityId, marketPlace, historicalDate, e);
-            return false;
-        }
-    }
-
-    private boolean isAnyArgumentMissing(String securityId, String marketPlace, String historicalDate) {
-        return StringUtils.isBlank(securityId)
-                || StringUtils.isBlank(marketPlace)
-                || StringUtils.isBlank(historicalDate);
-    }
-
-    /**
-     * Mirrors QueryBuilder.buildHistoricalQueries exactly so the existence check matches the
-     * same documents the diffusion query would: matchPhrase on the plain fields (no .keyword),
-     * trimmed historical date, and PROVIDER_DATATYPE = HISTORICAL.
-     */
-    private BoolQuery buildExistenceQuery(String securityId, String marketPlace, String historicalDate) {
-        String isinMarketKey = securityId + "_" + marketPlace;
-        String trimmedDate = historicalDate.trim();
-        return QueryBuilders.bool()
-                .must(m -> m.matchPhrase(mp -> mp.field(ISIN_MARKET).query(isinMarketKey)))
-                .must(m -> m.matchPhrase(mp -> mp.field(HISTORICAL_DATE).query(trimmedDate)))
-                .must(m -> m.matchPhrase(mp -> mp.field(PROVIDER_DATATYPE).query(HISTORICAL_DATATYPE)))
-                .build();
-    }
-}
-
+GET muse-derived/_search
+{ "query": { "match_phrase": { "Isin_Market": "AT0000A0U299_186" } } }
 
 GET muse-derived/_search
 {
@@ -90,9 +7,17 @@ GET muse-derived/_search
     "bool": {
       "must": [
         { "match_phrase": { "Isin_Market": "AT0000A0U299_186" } },
-        { "match_phrase": { "HISTORICAL_DATE": "20260430" } },
-        { "match_phrase": { "PROVIDER_DATATYPE": "HISTORICAL" } }
+        { "match_phrase": { "HISTORICAL_DATE": "20260430" } }
       ]
     }
   }
 }
+
+
+GET muse-derived/_search
+{ "query": { "match_phrase": { "Isin_Market": "AT0000A0U299_186" } } }
+
+
+GET muse-derived/_search
+{ "query": { "match_phrase": { "Isin_Market": "AT0000A0U299_186" } } }
+
