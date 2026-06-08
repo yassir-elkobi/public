@@ -1,268 +1,170 @@
-Strongly agree — this is a real bug. If the job starts at 23:59 and runs past midnight, items get different dates. Compute once in the config/reader and pass down.
-In ProcessOnDemandRequestBatchConfig or the reader, compute once:
-javaString today = LocalDate.now().format(DATE_FORMATTER);
-String yesterday = LocalDate.now().minusDays(1).format(DATE_FORMATTER);
-Pass into DemandHandlerImpl via the DTO or method param. Remove the per-item resolveDates computation of today/yesterday — keep only the historical-date extraction per item.
+public class GenericProviderResponseProcessor implements ItemProcessor<JSONObject, ProcessedItemsDto> {
 
-
-
-
-@Query("SELECT m FROM SynchronizationConfig m WHERE regexp_substr(:filename, m.filenamePattern) IS NOT NULL")
-Optional<SynchronizationConfig> findMatchingPattern(@Param("filename") String filename);
-
-
-
-
-private boolean hasHistoricalDate(SynchronizationSecurity item) {
-    return StringUtils.isNotBlank(item.getHistoricalDate());
-}
-
-
-
-
-public static BoolQuery buildScopeQuery(ClientScopeContext context) {
-    Query clientMatch = MatchQuery.of(m -> m.field(CLIENT_KEYWORD).query(context.clientName()))._toQuery();
-    Query syncFileMatch = MatchQuery.of(m -> m.field(SYNC_FILE_KEYWORD)
-            .query(StringUtils.isBlank(context.syncFileName())
-                    ? ABSENT_SYNC_FILENAME_QUERY_VALUE : context.syncFileName()))._toQuery();
-
-    BoolQuery.Builder scopeQueryBuilder = new BoolQuery.Builder()
-            .must(clientMatch)
-            .should(syncFileMatch);
-
-    // Historical clients have a null initSynchroTime; only add the range filter
-    // when a sync time is present.
-    if (context.initSynchroTime() != null) {
-        Query rangeQuery = RangeQuery.of(r -> r.date(d -> d
-                .field(TIMESTAMP_FIELD)
-                .gte(context.initSynchroTime().format(YYYY_MM_DD_HH_MM_SS_FORMATTER))))._toQuery();
-        scopeQueryBuilder.filter(rangeQuery);
-    }
-
-    if (!PRICES_INDEX.getIndexParam().equals(context.instrument())) {
-        Query instrumentMatch = MatchQuery.of(m -> m.field(INSTRUMENT_KEYWORD)
-                .query(context.instrument()))._toQuery();
-        scopeQueryBuilder.must(instrumentMatch);
-    }
-
-    return scopeQueryBuilder.build();
-}
-
-
-
-
-private static Query buildIdentifierClause(JSONObject securityItem, String providerIdentifierField,
-                                           List<String> clientIdentifierFields) {
-    BoolQuery.Builder identifierClause;
-    if (clientIdentifierFields.size() == 1) {
-        identifierClause = QueryBuilders.bool()
-                .must(matchPhrase(providerIdentifierField,
-                        (String) securityItem.get(clientIdentifierFields.get(0))));
-    } else {
-        identifierClause = QueryBuilders.bool()
-                .should(matchPhrase(providerIdentifierField,
-                        (String) securityItem.get(clientIdentifierFields.get(0))));
-        for (int i = 1; i < clientIdentifierFields.size(); i++) {
-            String clientIdField = clientIdentifierFields.get(i);
-            if (nonNull(securityItem.get(clientIdField))
-                    && isNotBlank(securityItem.get(clientIdField).toString())) {
-                identifierClause.should(matchPhrase(providerIdentifierField,
-                        (String) securityItem.get(clientIdField)));
-            }
-        }
-    }
-    return identifierClause.build()._toQuery();
-}
-
-
-
-
-
-Let me think about the cleanest way to thread the dates through without disrupting the existing flow.
-
-The challenge: `DemandHandlerImpl.generateOutputResult` is called per item by the processor. The dates need to be computed once (job level) and passed down. The cleanest path is to put them on the `OnDemandScopeDetailsDto` since that's already passed to `generateOutputResult` and is built once per item in the reader — but the reader builds it per item too.
-
-Actually the truly correct place is the **config/reader level** computed once, stored, and injected. Let me give you the exact wiring.
-
----
-
-## Approach — compute once in the reader, store on each DTO
-
-The reader (`ProcessOnDemandRequestItemReader`) builds all DTOs in `initialize()` which runs once. But the DTOs come from `OnDemandFeedDetailsRetriever.getVacationDetails`. The dates should be computed once there and set on each DTO.
-
----
-
-## Step 1 — Add date fields to `OnDemandScopeDetailsDto`
-
-```java
-@Data
-@Builder
-@AllArgsConstructor
-@NoArgsConstructor
-public class OnDemandScopeDetailsDto {
     // ... existing fields ...
-    private List<RequestParametersDto> requestParametersDtos;
+    private String historicalDate;  // resolved once per file in init()
 
-    // Computed once at job level — same value for every item in this run.
-    // Prevents midnight-crossing inconsistency where items processed before
-    // and after midnight would otherwise get different dates.
-    private String today;
-    private String yesterday;
-}
-```
+    public void init() {
+        try {
+            providerResponseEnricher = registry.getProcessor(
+                    providerName.equals(BLOOMBERG) ? BLOOMBERG : GENERIC);
+            providerResponseEnricher.enrichDataTypeDetails(providerData, vacationId, integrationId);
+            charsetConversionValue = genericParameterService.getCharsetConversionDetails(CHARSET_CONVERSION);
+            fileIntegrationDetailsService.updateFileReceivedStatus(integrationId, INTEGRATION_IN_PROGRESS);
 
----
-
-## Step 2 — Compute once in `OnDemandFeedDetailsRetriever.getVacationDetails`
-
-```java
-private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
-
-public List<OnDemandScopeDetailsDto> getVacationDetails(List<JSONObject> jsonObjectsOfScope,
-                                                        String syncFileName) {
-    VacationContext ctx = loadVacationContext(syncFileName);
-    Map<String, List<RequestParametersDto>> paramsByClient = new HashMap<>();
-
-    // Compute dates once for the whole job run — identical for every item.
-    LocalDate now = LocalDate.now();
-    String today = now.format(DATE_FORMATTER);
-    String yesterday = now.minusDays(1).format(DATE_FORMATTER);
-
-    return jsonObjectsOfScope.stream()
-            .map(security -> buildScopeDetails(security, ctx, paramsByClient, today, yesterday))
-            .collect(Collectors.toList());
-}
-
-private OnDemandScopeDetailsDto buildScopeDetails(JSONObject security, VacationContext ctx,
-                                                  Map<String, List<RequestParametersDto>> paramsByClient,
-                                                  String today, String yesterday) {
-    String securityClient = (String) security.get(CLIENT);
-    List<RequestParametersDto> clientParams =
-            paramsByClient.computeIfAbsent(securityClient, this::loadParamsForClient);
-
-    return OnDemandScopeDetailsDto.builder()
-            .headerParams(ctx.headerParams())
-            .fieldListByVacationName(ctx.fieldListByVacationName())
-            .feedInstrList(ctx.feedInstrList())
-            .instrumentCodesByInstrumentId(ctx.instrumentCodesByInstrumentId())
-            .vacConfigDetailsByVacName(ctx.vacConfigDetailsByVacName())
-            .item(security)
-            .onDemandVacationNamesById(ctx.vacationNamesById())
-            .requestParametersDtos(clientParams)
-            .providerName(resolveProviders(security))
-            .today(today)
-            .yesterday(yesterday)
-            .build();
-}
-```
-
----
-
-## Step 3 — Use the passed dates in `DemandHandlerImpl`, remove per-item computation
-
-```java
-@Override
-public List<JSONObject> generateOutputResult(OnDemandScopeDetailsDto item) {
-    List<JSONObject> outputList = new ArrayList<>();
-    try {
-        ResolvedRequestParamsContext params = resolveRequestParams(item);
-        RequestDatesContext dates = resolveDates(item);   // now reads today/yesterday from item
-
-        String onDemandFileName = dates.isHistorical() && !params.onDemandFileName().isEmpty()
-                ? toHistoricalFileName(params.onDemandFileName(), dates.today())
-                : params.onDemandFileName();
-
-        JsonNode rootNode = MAPPER.readTree(String.valueOf(item.getHeaderParams().get(FACTSET)));
-        Set<String> processedIdentifiers = new HashSet<>();
-
-        for (String identifier : params.identifiers()) {
-            String identifierStr = resolveIdentifierValue(item, identifier);
-            if (identifierStr == null || !processedIdentifiers.add(identifierStr)) {
-                continue;
-            }
-            JSONObject output = new JSONObject();
-            populateResultForIdentifier(item, output, rootNode, identifier, params, dates, onDemandFileName);
-            outputList.add(output);
+            // Resolve the historical date ONCE per file (same for every item).
+            // Returns null for non-historical files.
+            historicalDate = providerResponseEnricher.resolveHistoricalDate(fileName);
+        } catch (Exception e) {
+            log.error("Initialization failed", e);
+            fileIntegrationStatusUpdater.updateStatus(INTEGRATION_FAILED, integrationId);
         }
+    }
+
+    @Override
+    public ProcessedItemsDto process(JSONObject item) throws Exception {
+        Map<String, List<JSONObject>> indexDocumentsMap = new HashMap<>();
+        LocalDateTime now = nowEuropeDateTime();
+        DateTimeFormatter df = DateTimeFormatter.ofPattern(YYYY_MM_DD_HH_MM_SS_PATTERN);
+        DateTimeFormatter rundateDf = DateTimeFormatter.ofPattern(RUNDATE_FORMAT);
+        try {
+            List<RequestParametersDto> requestParametersDto = requestParamService.getByProviderID(providerId);
+            JSONObject processedItem = providerResponseEnricher.process(item, integrationId, requestParametersDto);
+            if (processedItem == null) {
+                return null;
+            }
+            // Pass the pre-resolved historicalDate down — no DB call per item
+            providerResponseEnricher.enrichProcessedItem(processedItem, indexDocumentsMap,
+                    charsetConversionValue, fileName, integrationId, historicalDate);
+
+            indexDocumentsMap.values().forEach(list ->
+                    list.forEach(json -> {
+                        json.put(PROVIDER_FILENAME, fileName);
+                        json.put(TIMESTAMP_FIELD, now.format(df));
+                        json.put(RUNDATE, now.format(rundateDf));
+                    }));
+            return ProcessedItemsDto.builder()
+                    .indexDocumentsMap(indexDocumentsMap)
+                    .build();
+        } catch (Exception e) {
+            log.error(ErrorConstants.PROCESSING_FAILED, e);
+            fileIntegrationStatusUpdater.updateStatus(INTEGRATION_FAILED, integrationId);
+            return null;
+        }
+    }
+}
+
+
+
+
+public interface ProviderResponseEnricher {
+    String getProvider();
+
+    void enrichDataTypeDetails(String fileData, Long vacationReferenceId, Long integrationId);
+
+    JSONObject process(JSONObject entry, long integrationId, List<RequestParametersDto> requestParametersDto);
+
+    // Added historicalDate param — resolved once per file by the caller
+    Map<String, List<JSONObject>> enrichProcessedItem(JSONObject entry,
+            Map<String, List<JSONObject>> indexDocumentsMap,
+            Map<String, String> charsetConversionValue,
+            String fileName, long integrationId, String historicalDate);
+
+    // New — resolve the historical date once per file (default null for providers
+    // that don't support historical, e.g. Bloomberg)
+    default String resolveHistoricalDate(String fileName) {
+        return null;
+    }
+}
+
+
+
+
+@Override
+public String resolveHistoricalDate(String fileName) {
+    return extractHistoricalDateForResponse(fileName);
+}
+
+@Override
+public Map<String, List<JSONObject>> enrichProcessedItem(JSONObject entry,
+        Map<String, List<JSONObject>> indexDocumentsMap,
+        Map<String, String> charsetConversionValue,
+        String fileName, long integrationId, String historicalDate) {
+    try {
+        dataIndexMapping.forEach(dto ->
+                indexDocumentsMap
+                        .computeIfAbsent(dto.getIndexName(), k -> new ArrayList<>())
+                        .add(entry));
+
+        // Stamp PROVIDER_DATATYPE and HISTORICAL_DATE on every document.
+        // historicalDate is pre-resolved once per file (null for non-historical).
+        dataIndexMapping.forEach(dto ->
+                indexDocumentsMap.getOrDefault(dto.getIndexName(), List.of())
+                        .forEach(json -> {
+                            json.put(PROVIDER_DATATYPE, dto.getDataType());
+                            if (historicalDate != null) {
+                                json.put(HISTORICAL_DATE, historicalDate);
+                            }
+                        }));
     } catch (Exception e) {
-        log.error("Error in OnDemand request file format for {}", item.getProviderName(), e);
+        log.error(ErrorConstants.ENRICHING_PROCESSED_ITEM_FAILED, e);
+        fileIntegrationStatusUpdater.updateStatus(INTEGRATION_FAILED, integrationId);
     }
-    return outputList;
+    return indexDocumentsMap;
 }
 
-/**
- * Reads the job-level today/yesterday (computed once upstream) and resolves the
- * request date for this item. Historical items use the historical date; others
- * use yesterday.
- */
-private RequestDatesContext resolveDates(OnDemandScopeDetailsDto item) {
-    String historicalDate = Objects.toString(item.getItem().get(HISTORICAL_DATE), "").trim();
-    boolean isHistorical = !historicalDate.isBlank();
-
-    String today = item.getToday();
-    String yesterday = item.getYesterday();
-    String requestDate = isHistorical ? historicalDate : yesterday;
-
-    return new RequestDatesContext(isHistorical, isHistorical ? historicalDate : null,
-            today, requestDate);
-}
-```
-
----
-
-## Step 4 — Remove the `DATE_FORMATTER` usage for today/yesterday from `DemandHandlerImpl`
-
-`DemandHandlerImpl` no longer computes today/yesterday itself. Keep `DATE_FORMATTER` only if `toHistoricalFileName` or `getOnDemandFileName` still use it. Looking at `toHistoricalFileName`:
-
-```java
-private String toHistoricalFileName(String onDemandFileName, String today) {
-    int dotIdx = onDemandFileName.lastIndexOf('.');
-    String base = (dotIdx > 0) ? onDemandFileName.substring(0, dotIdx) : onDemandFileName;
-    String ext = (dotIdx > 0) ? onDemandFileName.substring(dotIdx) : ".req";
-
-    // 'today' now passed in — no LocalDate.now() here
-    String historicalBase;
-    if (base.endsWith("_U") || base.endsWith("_I")) {
-        historicalBase = base.substring(0, base.length() - 2) + "_H_" + today;
-    } else if (base.endsWith("_H")) {
-        historicalBase = base + "_" + today;
-    } else {
-        historicalBase = base + "_H_" + today;
+// extractHistoricalDateForResponse stays the same — now called only once via resolveHistoricalDate
+private String extractHistoricalDateForResponse(String responseFileName) {
+    try {
+        Optional<RequestDetailsDto> request = requestDetailsService.getLastByResponseFilename(responseFileName);
+        if (request.isEmpty() || request.get().getRequestFilename() == null) {
+            return null;
+        }
+        Matcher matcher = HISTORICAL_DATE_PATTERN.matcher(request.get().getRequestFilename());
+        return matcher.find() ? matcher.group(1) : null;
+    } catch (Exception e) {
+        log.warn("Could not extract historical date for response '{}'; storing without HISTORICAL_DATE",
+                responseFileName, e);
+        return null;
     }
-    return historicalBase + ext;
 }
-```
 
-It takes `today` as a parameter now — no internal `LocalDate.now()`. So `DATE_FORMATTER` may only be needed if nothing else uses it. If unused, remove the constant from `DemandHandlerImpl`.
 
----
 
-## Step 5 — Update the test for the new constructor/fields
+@Override
+public Map<String, List<JSONObject>> enrichProcessedItem(JSONObject entry,
+        Map<String, List<JSONObject>> indexDocumentsMap,
+        Map<String, String> charsetConversionValue,
+        String fileName, long integrationId, String historicalDate) {
+    // existing Bloomberg logic — ignores historicalDate (Bloomberg has no historical flow)
+    // ... unchanged body ...
+}
 
-In `DemandHandlerImplTest`, the `buildHistoricalScopeItem` / `buildDto` helpers must now set `today` and `yesterday` on the DTO:
 
-```java
-OnDemandScopeDetailsDto.builder()
-    // ... existing ...
-    .today(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")))
-    .yesterday(LocalDate.now().minusDays(1).format(DateTimeFormatter.ofPattern("yyyyMMdd")))
-    .build();
-```
 
-And `OnDemandFeedDetailsRetrieverTest` — the `buildScopeDetails` calls now pass dates, but since they go through `getVacationDetails` which computes them internally, no test change needed there unless you assert on the date fields.
 
----
+Recommendation — Option A (store on RequestDetails)
+Add the field so the historical date is captured at request-generation time and read back at response time — no fragile filename parsing.
+java// RequestDetails.java + RequestDetailsDto.java — add:
+@Column(name = "historical_date")
+private String historicalDate;
+java// When saving the request (OnDemandRequestCommonService.saveOnDemandRequestFile):
+.historicalDate(extractedHistoricalDate)  // from the scope item / request content
+java// extractHistoricalDateForResponse becomes:
+private String extractHistoricalDateForResponse(String responseFileName) {
+    return requestDetailsService.getLastByResponseFilename(responseFileName)
+            .map(RequestDetailsDto::getHistoricalDate)
+            .orElse(null);
+}
+This is the proper fix for both #6 (resolve once) and #7 (read from content not filename). The date is stored when the request is built (where you have the real historical date from the sync file) and read back cleanly at response time.
 
-## Why this satisfies Imen's comment
 
-- **Computed once** — `LocalDate.now()` called a single time in `getVacationDetails`, not per item ✅
-- **Midnight-safe** — all items in one job run share the exact same `today`/`yesterday` snapshot ✅
-- **Passed down** — via the DTO, the natural carrier already flowing into `generateOutputResult` ✅
+Hi Mithra,
+For the PR review comments on Process H, I'm reworking how the HISTORICAL_DATE gets onto the derived documents during response integration.
+Currently I extract it from the request filename via regex (_H_<date>), but since we changed the request filename to use today's date (not the historical date), that extraction is now wrong. The reviewers also flagged that it should come from the file content, not the filename.
+The cleanest fix is to persist the historical date on muse_request_details when the request file is generated, then read it back at response integration time. This avoids fragile filename parsing and resolves it once per file instead of per item.
+This needs a new column historical_date (VARCHAR) on muse_request_details. Two questions:
 
----
+Are you OK with me adding a historical_date column to muse_request_details via Liquibase? It would be null for normal U/I requests and populated only for H requests.
+Should I add this to my existing Liquibase changeset, or do you want it as a separate migration owned by your team (since the table DDL is usually managed on your side)?
 
-## One alternative if you prefer not to touch the DTO
-
-If adding fields to `OnDemandScopeDetailsDto` feels heavy, you could compute the dates in `ProcessOnDemandRequestItemReader.initialize()` (also runs once) and pass them through. But the DTO approach is cleanest because the dates are per-item-accessible exactly where they're needed, and `initialize()` already calls `getVacationDetails` which is the single computation point.
-
-Go with the DTO approach. Apply steps 1–5, rebuild, run the `DemandHandlerImplTest` to confirm the date assertions still pass.
+Thanks!
