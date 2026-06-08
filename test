@@ -1,23 +1,123 @@
-given you removed HISTORICAL_DATE stamping, what field should the existence check match against?" — almost certainly Calculation Date compared to the requested historical date, since that's where the real data date lives on DERIVED docs.
+Here are all the MR comment replies, ready to paste into GitLab:
 
+---
 
-@Override
-public Map<String, List<JSONObject>> enrichProcessedItem(
-        JSONObject entry,
-        Map<String, List<JSONObject>> indexDocumentsMap,
-        Map<String, String> charsetConversionValue,
-        String fileName,
-        long integrationId) {
-    try {
-        dataIndexMapping.forEach(dto -> {
-            indexDocumentsMap
-                    .computeIfAbsent(dto.getIndexName(), k -> new ArrayList<>())
-                    .add(entry);
-            entry.put(PROVIDER_DATATYPE, dto.getDataType());
-        });
-    } catch (Exception e) {
-        log.error(ErrorConstants.ENRICHING_PROCESSED_ITEM_FAILED, e);
-        fileIntegrationStatusUpdater.updateStatus(INTEGRATION_FAILED, integrationId);
-    }
-    return indexDocumentsMap;
-}
+## Thread 1 — `DiffusionProcessorRegistry`: merge HISTORICAL into DERIVED_INDEX (Mohamed Ali)
+
+> Agreed. On closer inspection the processor lists are identical — both `DERIVED_INDEX` and `HISTORICAL` use `NotRequiredSecurityFilter` + `UndiffusedScopeFilter` + `ProviderDataEnricher`, with no `TickerUpdater`. Merging into a single case:
+>
+> ```java
+> case DERIVED_INDEX, HISTORICAL -> List.of(
+>     new NotRequiredSecurityFilter(context),
+>     new UndiffusedScopeFilter(context, elasticsearchService),
+>     new ProviderDataEnricher(context, providerDataFetcher, outputMapper));
+> ```
+>
+> Fixed.
+
+---
+
+## Thread 2 — `DiffusionJobDecider.resolveBaseClientName` (Mohamed Ali)
+
+> You're right to question it. The method was added during development because the scope was temporarily being indexed under the base client name (`APE`) while the Historical client reference is `APE_H`. After fixing `extractClient` to correctly return `APE_H` from the sync filename, the scope is now indexed under `APE_H` end-to-end, making `resolveBaseClientName` unnecessary. Removing it — `clientName` is now passed directly.
+
+---
+
+## Thread 3 — `DerivedDataExistenceCheckerImpl.resolveDerivedIndexName()` (reviewer)
+
+> Agreed, the method was redundant. Removed — `DERIVED_INDEX_NAME` constant is used directly. This also fixes a latent NPE that was masked during development: the method was calling `genericParameterService.getParamDetails("muse-derived")` using the index name as the lookup key, but the DB stores it under `param_code = 'DERIVED_INDEX'`. The constant already holds the correct value so no DB lookup is needed.
+
+---
+
+## Threads 4 & 5 — Local `ISIN_MARKET_FIELD` constant (reviewer)
+
+> Agreed. Replaced with the shared `ClientScopeConstants.ISIN_MARKET` in both `DerivedDataExistenceCheckerImpl` and `HistoricalDataExistsFilter`.
+
+---
+
+## Thread 6 — `GenericResponseProcessor.extractHistoricalDateForResponse` (Mithra)
+
+> Understood and agreed. Removed `extractHistoricalDateForResponse` and the `HISTORICAL_DATE_PATTERN` constant. `enrichProcessedItem` is reverted to its original behavior — no historical date stamping on derived docs. `HISTORICAL_DATE` flows from the Factset response file content, not from filename parsing.
+>
+> Note: the interface `ProviderResponseEnricher` already declares `String fileName` in the `enrichProcessedItem` signature (pre-existing, 12 usages). The method is implemented with that signature as required by the interface, but `fileName` is not used for any historical logic. The `dto`-scope bug fix (PROVIDER_DATATYPE being stamped correctly per entry) is retained.
+
+---
+
+## Thread 7 — `DemandHandlerImpl` today/yesterday computed per item, midnight risk (Imen)
+
+> Agreed. Moved date computation out of `generateOutputResult` — `LocalDate.now()` is called once in `OnDemandFeedDetailsRetriever.getVacationDetails`, and `today`/`yesterday` are passed through `OnDemandScopeDetailsDto` as dedicated fields. All items in the same batch now share the same reference date, eliminating the midnight boundary risk.
+
+---
+
+## Thread 8 — `SynchronizationConfigRepository @Query` concatenation (reviewer)
+
+> Agreed. Replaced with a single string literal — no concatenation in the `@Query` annotation.
+
+---
+
+## Thread 9 — `ProcessScopeSynchronizationItemProcessor.hasHistoricalDate` (reviewer)
+
+> Agreed. Replaced the manual null + `isBlank` check with `StringUtils.isNotBlank`.
+
+---
+
+## Thread 10 — `QueryBuilder.buildScopeQuery` over-engineering (reviewer)
+
+> Agreed, reverted. The only addition retained from the Process H work is the null-safe guard on `initSynchroTime`:
+> ```java
+> if (context.initSynchroTime() != null) {
+>     scopeQueryBuilder.filter(rangeQuery);
+> }
+> ```
+> This is necessary because Historical clients (`APE_H`, `IRP_BV_H`) are new client entries with no prior Init sync, so `initSynchroTime` is legitimately null for them. Sending `LocalDateTime.MIN` to ES caused `all_shards_failed`. Everything else — `clientName` null-check, `syncFileName` variable, `PRICES_INDEX != null`, redundant instrument guard — removed. Original instrument check restored as-is.
+
+---
+
+## Thread 11 — `QueryBuilder.buildIdentifierClause` stream refactor (reviewer)
+
+> Agreed. Reverted to the traditional indexed `for` loop. First element added unconditionally, subsequent elements blank-checked, as in the original.
+
+---
+
+## Thread 12 — `HistoricalDataExistsFilter` not working (Mithra) — *needs your input*
+
+> After investigating this, I found the root cause: the 334 existing documents for `AT0000A0U299_186` in `muse-derived` all have `"HISTORICAL_DATE": ""` (empty string) and `PROVIDER_DATATYPE: "DERIVED"`. The actual data date is stored in the `Calculation Date` field as `dd/MM/yyyy` (e.g. `17/05/2026`), not in `HISTORICAL_DATE`.
+>
+> The existence check queries `HISTORICAL_DATE = "20260430"` which always returns 0 hits on normal DERIVED docs — so the filter never fires and every security passes through.
+>
+> The original design relied on `enrichProcessedItem` stamping `HISTORICAL_DATE` on response docs, but you've asked us to remove that stamping (Thread 6). This creates a design conflict: the filter has no populated field to match against.
+>
+> **Could you confirm:** should the existence check compare the requested historical date (format `YYYYMMDD`) against the `Calculation Date` field (format `dd/MM/yyyy`)? I can implement the format conversion and fix the query accordingly. Alternatively, if there is another field that should be used as the date anchor for deduplication, please point us to it and we'll fix it immediately.
+
+---
+
+## Thread 13 — `@JsonProperty("HISTORICAL_DATE")` vs `"historicalDate"` (Mithra)
+
+> Based on our analysis, we believe the AMANDA sync CSV column header is `historicalDate` (camelCase). We've updated the annotation accordingly:
+> ```java
+> @JsonProperty("historicalDate")
+> private String historicalDate;
+> ```
+> Could you confirm the exact column header from an actual AMANDA sync file so we can be certain? If it differs we'll adjust immediately.
+
+---
+
+## Thread 14 — `HISTORICAL_DATE` constant value / vendor header (Mithra)
+
+> The ES field name and the vendor file header are two different strings used at different layers. We've separated them into two constants to make this explicit:
+> ```java
+> // ES field name — used in all queries and scope document storage. Validated working end-to-end in DEV.
+> public static final String HISTORICAL_DATE = "HISTORICAL_DATE";
+>
+> // Vendor/file column header — used only when writing output file headers.
+> public static final String HISTORICAL_DATE_HEADER = "HISTORICAL DATE";
+> ```
+> Please confirm if the output file header should indeed use a space (`HISTORICAL DATE`) or underscore (`HISTORICAL_DATE`).
+
+---
+
+## Formatting threads (all reviewers)
+
+> The formatting differences in this MR are unintentional — my IDE applies the project's configured formatter automatically when a Java file is opened, which differs from the current team baseline. To keep this MR focused on the Process H changes and avoid noise in the diff, I have reverted all formatting-only changes.
+>
+> I will open a separate ticket to align our IDE formatting configurations across the team (EditorConfig / CheckStyle / IntelliJ code style export) and will add you as a reviewer on that ticket so we can agree on a shared standard before it's enforced.
