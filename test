@@ -78,3 +78,191 @@ private static Query buildIdentifierClause(JSONObject securityItem, String provi
 
 
 
+Let me think about the cleanest way to thread the dates through without disrupting the existing flow.
+
+The challenge: `DemandHandlerImpl.generateOutputResult` is called per item by the processor. The dates need to be computed once (job level) and passed down. The cleanest path is to put them on the `OnDemandScopeDetailsDto` since that's already passed to `generateOutputResult` and is built once per item in the reader — but the reader builds it per item too.
+
+Actually the truly correct place is the **config/reader level** computed once, stored, and injected. Let me give you the exact wiring.
+
+---
+
+## Approach — compute once in the reader, store on each DTO
+
+The reader (`ProcessOnDemandRequestItemReader`) builds all DTOs in `initialize()` which runs once. But the DTOs come from `OnDemandFeedDetailsRetriever.getVacationDetails`. The dates should be computed once there and set on each DTO.
+
+---
+
+## Step 1 — Add date fields to `OnDemandScopeDetailsDto`
+
+```java
+@Data
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class OnDemandScopeDetailsDto {
+    // ... existing fields ...
+    private List<RequestParametersDto> requestParametersDtos;
+
+    // Computed once at job level — same value for every item in this run.
+    // Prevents midnight-crossing inconsistency where items processed before
+    // and after midnight would otherwise get different dates.
+    private String today;
+    private String yesterday;
+}
+```
+
+---
+
+## Step 2 — Compute once in `OnDemandFeedDetailsRetriever.getVacationDetails`
+
+```java
+private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
+
+public List<OnDemandScopeDetailsDto> getVacationDetails(List<JSONObject> jsonObjectsOfScope,
+                                                        String syncFileName) {
+    VacationContext ctx = loadVacationContext(syncFileName);
+    Map<String, List<RequestParametersDto>> paramsByClient = new HashMap<>();
+
+    // Compute dates once for the whole job run — identical for every item.
+    LocalDate now = LocalDate.now();
+    String today = now.format(DATE_FORMATTER);
+    String yesterday = now.minusDays(1).format(DATE_FORMATTER);
+
+    return jsonObjectsOfScope.stream()
+            .map(security -> buildScopeDetails(security, ctx, paramsByClient, today, yesterday))
+            .collect(Collectors.toList());
+}
+
+private OnDemandScopeDetailsDto buildScopeDetails(JSONObject security, VacationContext ctx,
+                                                  Map<String, List<RequestParametersDto>> paramsByClient,
+                                                  String today, String yesterday) {
+    String securityClient = (String) security.get(CLIENT);
+    List<RequestParametersDto> clientParams =
+            paramsByClient.computeIfAbsent(securityClient, this::loadParamsForClient);
+
+    return OnDemandScopeDetailsDto.builder()
+            .headerParams(ctx.headerParams())
+            .fieldListByVacationName(ctx.fieldListByVacationName())
+            .feedInstrList(ctx.feedInstrList())
+            .instrumentCodesByInstrumentId(ctx.instrumentCodesByInstrumentId())
+            .vacConfigDetailsByVacName(ctx.vacConfigDetailsByVacName())
+            .item(security)
+            .onDemandVacationNamesById(ctx.vacationNamesById())
+            .requestParametersDtos(clientParams)
+            .providerName(resolveProviders(security))
+            .today(today)
+            .yesterday(yesterday)
+            .build();
+}
+```
+
+---
+
+## Step 3 — Use the passed dates in `DemandHandlerImpl`, remove per-item computation
+
+```java
+@Override
+public List<JSONObject> generateOutputResult(OnDemandScopeDetailsDto item) {
+    List<JSONObject> outputList = new ArrayList<>();
+    try {
+        ResolvedRequestParamsContext params = resolveRequestParams(item);
+        RequestDatesContext dates = resolveDates(item);   // now reads today/yesterday from item
+
+        String onDemandFileName = dates.isHistorical() && !params.onDemandFileName().isEmpty()
+                ? toHistoricalFileName(params.onDemandFileName(), dates.today())
+                : params.onDemandFileName();
+
+        JsonNode rootNode = MAPPER.readTree(String.valueOf(item.getHeaderParams().get(FACTSET)));
+        Set<String> processedIdentifiers = new HashSet<>();
+
+        for (String identifier : params.identifiers()) {
+            String identifierStr = resolveIdentifierValue(item, identifier);
+            if (identifierStr == null || !processedIdentifiers.add(identifierStr)) {
+                continue;
+            }
+            JSONObject output = new JSONObject();
+            populateResultForIdentifier(item, output, rootNode, identifier, params, dates, onDemandFileName);
+            outputList.add(output);
+        }
+    } catch (Exception e) {
+        log.error("Error in OnDemand request file format for {}", item.getProviderName(), e);
+    }
+    return outputList;
+}
+
+/**
+ * Reads the job-level today/yesterday (computed once upstream) and resolves the
+ * request date for this item. Historical items use the historical date; others
+ * use yesterday.
+ */
+private RequestDatesContext resolveDates(OnDemandScopeDetailsDto item) {
+    String historicalDate = Objects.toString(item.getItem().get(HISTORICAL_DATE), "").trim();
+    boolean isHistorical = !historicalDate.isBlank();
+
+    String today = item.getToday();
+    String yesterday = item.getYesterday();
+    String requestDate = isHistorical ? historicalDate : yesterday;
+
+    return new RequestDatesContext(isHistorical, isHistorical ? historicalDate : null,
+            today, requestDate);
+}
+```
+
+---
+
+## Step 4 — Remove the `DATE_FORMATTER` usage for today/yesterday from `DemandHandlerImpl`
+
+`DemandHandlerImpl` no longer computes today/yesterday itself. Keep `DATE_FORMATTER` only if `toHistoricalFileName` or `getOnDemandFileName` still use it. Looking at `toHistoricalFileName`:
+
+```java
+private String toHistoricalFileName(String onDemandFileName, String today) {
+    int dotIdx = onDemandFileName.lastIndexOf('.');
+    String base = (dotIdx > 0) ? onDemandFileName.substring(0, dotIdx) : onDemandFileName;
+    String ext = (dotIdx > 0) ? onDemandFileName.substring(dotIdx) : ".req";
+
+    // 'today' now passed in — no LocalDate.now() here
+    String historicalBase;
+    if (base.endsWith("_U") || base.endsWith("_I")) {
+        historicalBase = base.substring(0, base.length() - 2) + "_H_" + today;
+    } else if (base.endsWith("_H")) {
+        historicalBase = base + "_" + today;
+    } else {
+        historicalBase = base + "_H_" + today;
+    }
+    return historicalBase + ext;
+}
+```
+
+It takes `today` as a parameter now — no internal `LocalDate.now()`. So `DATE_FORMATTER` may only be needed if nothing else uses it. If unused, remove the constant from `DemandHandlerImpl`.
+
+---
+
+## Step 5 — Update the test for the new constructor/fields
+
+In `DemandHandlerImplTest`, the `buildHistoricalScopeItem` / `buildDto` helpers must now set `today` and `yesterday` on the DTO:
+
+```java
+OnDemandScopeDetailsDto.builder()
+    // ... existing ...
+    .today(LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")))
+    .yesterday(LocalDate.now().minusDays(1).format(DateTimeFormatter.ofPattern("yyyyMMdd")))
+    .build();
+```
+
+And `OnDemandFeedDetailsRetrieverTest` — the `buildScopeDetails` calls now pass dates, but since they go through `getVacationDetails` which computes them internally, no test change needed there unless you assert on the date fields.
+
+---
+
+## Why this satisfies Imen's comment
+
+- **Computed once** — `LocalDate.now()` called a single time in `getVacationDetails`, not per item ✅
+- **Midnight-safe** — all items in one job run share the exact same `today`/`yesterday` snapshot ✅
+- **Passed down** — via the DTO, the natural carrier already flowing into `generateOutputResult` ✅
+
+---
+
+## One alternative if you prefer not to touch the DTO
+
+If adding fields to `OnDemandScopeDetailsDto` feels heavy, you could compute the dates in `ProcessOnDemandRequestItemReader.initialize()` (also runs once) and pass them through. But the DTO approach is cleanest because the dates are per-item-accessible exactly where they're needed, and `initialize()` already calls `getVacationDetails` which is the single computation point.
+
+Go with the DTO approach. Apply steps 1–5, rebuild, run the `DemandHandlerImplTest` to confirm the date assertions still pass.
