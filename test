@@ -1,1 +1,80 @@
+Strongly agree — this is a real bug. If the job starts at 23:59 and runs past midnight, items get different dates. Compute once in the config/reader and pass down.
+In ProcessOnDemandRequestBatchConfig or the reader, compute once:
+javaString today = LocalDate.now().format(DATE_FORMATTER);
+String yesterday = LocalDate.now().minusDays(1).format(DATE_FORMATTER);
+Pass into DemandHandlerImpl via the DTO or method param. Remove the per-item resolveDates computation of today/yesterday — keep only the historical-date extraction per item.
+
+
+
+
+@Query("SELECT m FROM SynchronizationConfig m WHERE regexp_substr(:filename, m.filenamePattern) IS NOT NULL")
+Optional<SynchronizationConfig> findMatchingPattern(@Param("filename") String filename);
+
+
+
+
+private boolean hasHistoricalDate(SynchronizationSecurity item) {
+    return StringUtils.isNotBlank(item.getHistoricalDate());
+}
+
+
+
+
+public static BoolQuery buildScopeQuery(ClientScopeContext context) {
+    Query clientMatch = MatchQuery.of(m -> m.field(CLIENT_KEYWORD).query(context.clientName()))._toQuery();
+    Query syncFileMatch = MatchQuery.of(m -> m.field(SYNC_FILE_KEYWORD)
+            .query(StringUtils.isBlank(context.syncFileName())
+                    ? ABSENT_SYNC_FILENAME_QUERY_VALUE : context.syncFileName()))._toQuery();
+
+    BoolQuery.Builder scopeQueryBuilder = new BoolQuery.Builder()
+            .must(clientMatch)
+            .should(syncFileMatch);
+
+    // Historical clients have a null initSynchroTime; only add the range filter
+    // when a sync time is present.
+    if (context.initSynchroTime() != null) {
+        Query rangeQuery = RangeQuery.of(r -> r.date(d -> d
+                .field(TIMESTAMP_FIELD)
+                .gte(context.initSynchroTime().format(YYYY_MM_DD_HH_MM_SS_FORMATTER))))._toQuery();
+        scopeQueryBuilder.filter(rangeQuery);
+    }
+
+    if (!PRICES_INDEX.getIndexParam().equals(context.instrument())) {
+        Query instrumentMatch = MatchQuery.of(m -> m.field(INSTRUMENT_KEYWORD)
+                .query(context.instrument()))._toQuery();
+        scopeQueryBuilder.must(instrumentMatch);
+    }
+
+    return scopeQueryBuilder.build();
+}
+
+
+
+
+private static Query buildIdentifierClause(JSONObject securityItem, String providerIdentifierField,
+                                           List<String> clientIdentifierFields) {
+    BoolQuery.Builder identifierClause;
+    if (clientIdentifierFields.size() == 1) {
+        identifierClause = QueryBuilders.bool()
+                .must(matchPhrase(providerIdentifierField,
+                        (String) securityItem.get(clientIdentifierFields.get(0))));
+    } else {
+        identifierClause = QueryBuilders.bool()
+                .should(matchPhrase(providerIdentifierField,
+                        (String) securityItem.get(clientIdentifierFields.get(0))));
+        for (int i = 1; i < clientIdentifierFields.size(); i++) {
+            String clientIdField = clientIdentifierFields.get(i);
+            if (nonNull(securityItem.get(clientIdField))
+                    && isNotBlank(securityItem.get(clientIdField).toString())) {
+                identifierClause.should(matchPhrase(providerIdentifierField,
+                        (String) securityItem.get(clientIdField)));
+            }
+        }
+    }
+    return identifierClause.build()._toQuery();
+}
+
+
+
+
 
