@@ -1,34 +1,5 @@
-String onDemandFileName = dates.isHistorical() && !params.onDemandFileName().isEmpty()
-        ? toHistoricalFileName(params.onDemandFileName(), dates)
-        : params.onDemandFileName();
-
-
-
-/**
- * Historical request filename: DD_INPUT_<CLIENT>_H_<date>.req
- * getOnDemandFileName then appends the unique id → DD_INPUT_APEM_H_20260603-<uid>.req
- * Normal derived files do not get a date inserted (handled by the caller, not this method).
- */
-private String toHistoricalFileName(String onDemandFileName, RequestDatesContext dates) {
-    int dotIdx = onDemandFileName.lastIndexOf('.');
-    String base = (dotIdx > 0) ? onDemandFileName.substring(0, dotIdx) : onDemandFileName;
-    String ext  = (dotIdx > 0) ? onDemandFileName.substring(dotIdx) : DEFAULT_REQUEST_EXTENSION;
-
-    String fileDate = dates.requestDate(); // historical date for H flow, already YYYYMMDD
-
-    String historicalBase;
-    if (base.endsWith("_U") || base.endsWith("_I")) {
-        historicalBase = base.substring(0, base.length() - 2) + "_H_" + fileDate;
-    } else if (base.endsWith("_H")) {
-        historicalBase = base + "_" + fileDate;
-    } else {
-        historicalBase = base + "_H_" + fileDate;
-    }
-    return historicalBase + ext;
-}
-
-
-
+private static final DateTimeFormatter REQUEST_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd");
+private static final DateTimeFormatter DERIVED_INDEX_DATE_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy");
 
 @Override
 public boolean hasDerivedDataFor(String securityId, String marketPlace, String historicalDate) {
@@ -48,29 +19,37 @@ public boolean hasDerivedDataFor(String securityId, String marketPlace, String h
 
 private BoolQuery buildExistenceQuery(String securityId, String marketPlace, String historicalDate) {
     String isinMarketKey = securityId + "_" + marketPlace;
-    String trimmedDate = historicalDate.trim();
+    String derivedDate = toDerivedIndexDateFormat(historicalDate.trim());
     return QueryBuilders.bool()
             .must(m -> m.matchPhrase(mp -> mp.field(ISIN_MARKET).query(isinMarketKey)))
-            .must(m -> m.matchPhrase(mp -> mp.field(HISTORICAL_DATE).query(trimmedDate)))
+            .must(m -> m.matchPhrase(mp -> mp.field(HISTORICAL_DATE).query(derivedDate)))
             .build();
 }
 
-
-
-
-
-
-GET muse-derived/_search
-{
-  "query": {
-    "bool": {
-      "must": [
-        { "match_phrase": { "Isin_Market": "AT0000A0U299_186" } },
-        { "match_phrase": { "HISTORICAL DATE": "20260430" } }
-      ]
+/**
+ * The sync request delivers the historical date as YYYYMMDD (e.g. 20260430),
+ * but the derived index stores "HISTORICAL DATE" as dd/MM/yyyy (e.g. 30/04/2026).
+ * Convert before querying so the existence check matches.
+ */
+private String toDerivedIndexDateFormat(String yyyyMmDd) {
+    try {
+        return LocalDate.parse(yyyyMmDd, REQUEST_DATE_FORMAT).format(DERIVED_INDEX_DATE_FORMAT);
+    } catch (DateTimeParseException e) {
+        log.warn("Historical date '{}' not in YYYYMMDD; querying derived index as-is", yyyyMmDd);
+        return yyyyMmDd;
     }
-  }
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 
