@@ -1,19 +1,1 @@
-Agreed, reverted. All the additions have been removed:
-
-Removed the null check on context at the start — query building, not validation.
-Removed context.clientName() != null guard — client is already validated upstream.
-Removed the syncFileName local variable — context.syncFileName() is used directly.
-Removed PRICES_INDEX != null — an enum constant is never null.
-Removed context.instrument() != null — already checked in diffusionHandler.
-
-The only change retained from this MR is the if (context.initSynchroTime() != null) guard before adding the range filter to the builder. This is necessary for Historical clients (APE_H, IRP_BV_H) which have a null initSynchroTime by design — they are new client entries with no prior Init sync. Without this guard, sending LocalDateTime.MIN to ES causes all_shards_failed. All other logic is identical to the original method.
-
-
-
-
-
-
-
-
-
 
