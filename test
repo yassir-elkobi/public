@@ -1,8 +1,1 @@
-if (INIT.equals(syncType) || HISTORICAL.equals(syncType)) {
-    client.setInitSyncTime(syncTime);
-    clientReferenceService.save(client);
-}
 
-
-
-Fixed in ProcessScopeSynchronisationJobListener.updateSyncDetailsAndClient — initSyncTime is now set for HISTORICAL sync type as well as INIT, using the sync time from the job parameters. On the first H sync the value gets stamped at completion; subsequent runs then carry a populated initSyncTime. The null guard in buildScopeQuery remains only as a first-run safety net.
