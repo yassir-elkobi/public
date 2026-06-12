@@ -1,68 +1,68 @@
-private Step buildStep(ProviderStepFactory factory,
-                       JobRepository jobRepository,
-                       @Qualifier("resourcelessTxManager")
-                           PlatformTransactionManager transactionManager,
-                       ItemReader<OnDemandScopeDetailsDto> sharedReader,
-                       TaskExecutor stepTaskExecutor,
-                       OnDemandRequestStepListener onDemandRequestStepListener,
-                       Map<String, ItemProcessor<OnDemandScopeDetailsDto,
-                           OnDemandScopeDetailsDto>> filtersByProvider) {
+// Historical FactSet response files: DD_OUTPUT_{INSTRUMENT}_{CLIENT}_H_{YYYYMMDD}_{ID}.txt
+public static final String FACTSET_HISTORICAL_FILENAME_PATTERN =
+    "^DD_OUTPUT_(EQ|FI|FU|OP|FUNDS)_([A-Z]+)_H_(\\d{8})_(\\d+)$";
+public static final Pattern FACTSET_HISTORICAL_FILENAME_PATTERN_COMPILED =
+    Pattern.compile(FACTSET_HISTORICAL_FILENAME_PATTERN);
 
-    CompositeItemProcessor<OnDemandScopeDetailsDto, List<OnDemandSecurityDto>> composite =
-        new CompositeItemProcessor<>();
-    composite.setDelegates(List.of(
-        filtersByProvider.get(factory.getProviderId()),   // provider(+scope) — ONE delegate
-        factory.processor()));
+// Historical client token -> base client label (the "_H" suffix is added at diffusion time).
+public static final Map<String, String> HISTORICAL_CLIENT_TOKEN_TO_LABEL =
+    Map.of(
+        "IRPB", "IRP_BV",
+        "APEM", "APE"
+    );
 
-    return new StepBuilder(factory.getProviderId() + "-step", jobRepository)
-            .<OnDemandScopeDetailsDto, List<OnDemandSecurityDto>>chunk(200, transactionManager)
-            .reader(sharedReader)
-            .processor(composite)
-            .writer(factory.writer())
-            .listener(onDemandRequestStepListener)
-            .taskExecutor(stepTaskExecutor)
-            .build();
+// Historical instrument code -> instrument type (FUNDS differs from the BP2S "UC" code).
+public static final Map<String, String> HISTORICAL_INSTRUMENT_CODE_TO_TYPE =
+    Map.of(
+        "EQ",    "EQUITY",
+        "FI",    "BOND",
+        "FU",    "FUTURES CONTRACT",
+        "OP",    "OPTION",
+        "FUNDS", "UCITS UNIT"
+    );
+
+
+
+
+private void processFactSetDiffusion(FileIntegrationDetailsDto responseIntegratedFile) {
+    String responseFilename = responseIntegratedFile.getFilename();
+    log.info("Processing {} response file '{}' for diffusion...", FACTSET, responseFilename);
+
+    String filenameWithoutExt = getFileNameWithoutExtension(responseFilename);
+
+    Matcher historical =
+        FactSetConstants.FACTSET_HISTORICAL_FILENAME_PATTERN_COMPILED.matcher(filenameWithoutExt);
+    if (historical.matches()) {
+        diffuseHistorical(historical.group(1), historical.group(2), responseFilename);
+        return;
+    }
+
+    diffuseDerived(responseIntegratedFile);   // existing BP2S_DT... path, unchanged
 }
 
+private void diffuseHistorical(String instrumentCode, String clientToken, String responseFilename) {
+    String instrumentType = FactSetConstants.HISTORICAL_INSTRUMENT_CODE_TO_TYPE.get(instrumentCode);
+    String baseLabel = FactSetConstants.HISTORICAL_CLIENT_TOKEN_TO_LABEL.get(clientToken);
+    if (instrumentType == null || baseLabel == null) {
+        log.error("Unknown instrument '{}' or client '{}' in historical filename '{}', skipping diffusion",
+                instrumentCode, clientToken, responseFilename);
+        return;
+    }
 
+    String clientLabel = baseLabel + "_H";   // IRP_BV -> IRP_BV_H, APE -> APE_H
 
-@Bean
-public Job processOnDemandRequest(
-        JobRepository jobRepository,
-        @Qualifier("resourcelessTxManager")
-            PlatformTransactionManager transactionManager,
-        ItemReader<OnDemandScopeDetailsDto> sharedReader,
-        @Autowired Map<String, ProviderStepFactory> factories,
-        TaskExecutor stepTaskExecutor,
-        OnDemandRequestStepListener onDemandRequestStepListener,
-        @Qualifier("bbgOnDemandFilter")
-            ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> bbgFilter,
-        @Qualifier("fctOnDemandFilter")
-            ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> fctFilter) {
+    Optional<ClientReferenceDto> client = clientReferenceService.getClientByClientLabel(clientLabel);
+    if (client.isEmpty() || !client.get().isOnDemandActive()) {
+        log.info("Historical client '{}' not found or on-demand inactive, skipping diffusion", clientLabel);
+        return;
+    }
 
-    Map<String, ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto>>
-        filtersByProvider = Map.of(BLOOMBERG, bbgFilter, FACTSET, fctFilter);
+    log.info("FactSet HISTORICAL response '{}': client='{}', instrument='{}', diffusedData='{}'",
+            responseFilename, clientLabel, instrumentType, FactSetConstants.DIFFUSED_DATA_HISTORICAL);
 
-    List<Flow> providerFlows = factories.values().stream()
-            .map(factory -> {
-                Step step = buildStep(
-                    factory, jobRepository, transactionManager,
-                    sharedReader, stepTaskExecutor,
-                    onDemandRequestStepListener, filtersByProvider);
-                return new FlowBuilder<Flow>(factory.getProviderId() + "-flow")
-                        .start(step).build();
-            })
-            .collect(Collectors.toList());
-
-    Flow parallel = new FlowBuilder<Flow>("parallel-split")
-            .split(stepTaskExecutor)
-            .add(providerFlows.toArray(new Flow[0]))
-            .build();
-
-    return new JobBuilder("ONDEMANDREQUEST-JOB", jobRepository)
-            .incrementer(new RunIdIncrementer())
-            .listener(onDemandRequestStepListener)
-            .start(parallel)
-            .end()
-            .build();
+    diffusionHandler.processDiffusionCommand(DiffusionCommand.builder()
+            .clientName(clientLabel)
+            .instrument(instrumentType)
+            .diffusedData(FactSetConstants.DIFFUSED_DATA_HISTORICAL)
+            .build());
 }
