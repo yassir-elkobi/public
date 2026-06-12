@@ -1,1 +1,85 @@
+@Bean
+@StepScope
+public ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> fctOnDemandFilter(
+        @Value("#{jobParameters[syncType]}") String syncType,
+        @Value("#{jobParameters[clientName]}") String clientName,
+        @Value("#{jobParameters[startAt]}") LocalDateTime startTime,
+        @Qualifier("factSetProviderFactory") ProviderStepFactory factory,   // confirm bean name
+        ClientReferenceService clientReferenceService,
+        ClientScopeEsRetriever clientScopeEsRetriever) {
+    return buildProviderFilter(factory.filter(), syncType, clientName, startTime,
+            clientReferenceService, clientScopeEsRetriever, new FctScopeMatchStrategy());
+}
 
+@Bean
+@StepScope
+public ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> bbgOnDemandFilter(
+        @Value("#{jobParameters[syncType]}") String syncType,
+        @Value("#{jobParameters[clientName]}") String clientName,
+        @Value("#{jobParameters[startAt]}") LocalDateTime startTime,
+        @Qualifier("bloombergProviderFactory") ProviderStepFactory factory,  // confirm bean name
+        ClientReferenceService clientReferenceService,
+        ClientScopeEsRetriever clientScopeEsRetriever) {
+    return buildProviderFilter(factory.filter(), syncType, clientName, startTime,
+            clientReferenceService, clientScopeEsRetriever, new BbgScopeMatchStrategy());
+}
+
+/**
+ * Provider existence filter + (only for non-historical) the cross-client scope filter.
+ * Historical requests are validated per historical date by the provider filter alone,
+ * so the cross-client scope filter is never composed into the chain for them.
+ */
+private ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> buildProviderFilter(
+        ItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> providerFilter,
+        String syncType, String clientName, LocalDateTime startTime,
+        ClientReferenceService clientReferenceService,
+        ClientScopeEsRetriever clientScopeEsRetriever,
+        AbstractScopeMatchStrategy matchStrategy) {
+
+    if (isHistorical(syncType)) {
+        return providerFilter;          // one filter, scope filter genuinely absent
+    }
+
+    Set<ClientReferenceDto> others = clientReferenceService.getAllSynchronizedClientsBefore(startTime);
+    others.removeIf(c -> clientName.equalsIgnoreCase(c.getClientLabel()));
+
+    CompositeItemProcessor<OnDemandScopeDetailsDto, OnDemandScopeDetailsDto> composite =
+        new CompositeItemProcessor<>();
+    composite.setDelegates(List.of(
+        providerFilter,
+        new ExistsInOtherClientScopeFilter(clientScopeEsRetriever, matchStrategy, others, startTime)));
+    return composite;
+}
+
+private boolean isHistorical(String syncType) {
+    return HISTORICAL.name().equalsIgnoreCase(syncType);
+}
+
+
+
+
+
+private Step buildStep(ProviderStepFactory factory,
+                       JobRepository jobRepository,
+                       @Qualifier("resourcelessTxManager") PlatformTransactionManager transactionManager,
+                       ItemReader<OnDemandScopeDetailsDto> sharedReader,
+                       TaskExecutor stepTaskExecutor,
+                       OnDemandRequestStepListener onDemandRequestStepListener,
+                       Map<String, ItemProcessor<OnDemandScopeDetailsDto,
+                           OnDemandScopeDetailsDto>> filtersByProvider) {
+
+    CompositeItemProcessor<OnDemandScopeDetailsDto, List<OnDemandSecurityDto>> composite =
+        new CompositeItemProcessor<>();
+    composite.setDelegates(List.of(
+        filtersByProvider.get(factory.getProviderId()),   // provider(+scope) — ONE delegate
+        factory.processor()));
+
+    return new StepBuilder(factory.getProviderId() + "-step", jobRepository)
+            .<...>chunk(200, transactionManager)
+            .reader(sharedReader)
+            .processor(composite)
+            .writer(factory.writer())
+            .listener(onDemandRequestStepListener)
+            .taskExecutor(stepTaskExecutor)
+            .build();
+}
