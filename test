@@ -1,68 +1,54 @@
-// Historical FactSet response files: DD_OUTPUT_{INSTRUMENT}_{CLIENT}_H_{YYYYMMDD}_{ID}.txt
-public static final String FACTSET_HISTORICAL_FILENAME_PATTERN =
-    "^DD_OUTPUT_(EQ|FI|FU|OP|FUNDS)_([A-Z]+)_H_(\\d{8})_(\\d+)$";
-public static final Pattern FACTSET_HISTORICAL_FILENAME_PATTERN_COMPILED =
-    Pattern.compile(FACTSET_HISTORICAL_FILENAME_PATTERN);
-
-// Historical client token -> base client label (the "_H" suffix is added at diffusion time).
-public static final Map<String, String> HISTORICAL_CLIENT_TOKEN_TO_LABEL =
-    Map.of(
-        "IRPB", "IRP_BV",
-        "APEM", "APE"
-    );
-
-// Historical instrument code -> instrument type (FUNDS differs from the BP2S "UC" code).
-public static final Map<String, String> HISTORICAL_INSTRUMENT_CODE_TO_TYPE =
-    Map.of(
-        "EQ",    "EQUITY",
-        "FI",    "BOND",
-        "FU",    "FUTURES CONTRACT",
-        "OP",    "OPTION",
-        "FUNDS", "UCITS UNIT"
-    );
-
-
-
-
-private void processFactSetDiffusion(FileIntegrationDetailsDto responseIntegratedFile) {
+private void diffuseDerived(FileIntegrationDetailsDto responseIntegratedFile) {
     String responseFilename = responseIntegratedFile.getFilename();
-    log.info("Processing {} response file '{}' for diffusion...", FACTSET, responseFilename);
 
     String filenameWithoutExt = getFileNameWithoutExtension(responseFilename);
+    Matcher matcher = FACTSET_FILENAME_PATTERN_COMPILED.matcher(filenameWithoutExt);
 
-    Matcher historical =
-        FactSetConstants.FACTSET_HISTORICAL_FILENAME_PATTERN_COMPILED.matcher(filenameWithoutExt);
-    if (historical.matches()) {
-        diffuseHistorical(historical.group(1), historical.group(2), responseFilename);
+    if (!matcher.matches()) {
+        log.warn("Response filename '{}' does not match expected {} pattern,"
+            + " skipping diffusion", responseFilename, FACTSET);
         return;
     }
 
-    diffuseDerived(responseIntegratedFile);   // existing BP2S_DT... path, unchanged
-}
+    char clientLetter = matcher.group(1).charAt(0);
+    String instrumentCode = matcher.group(2);
 
-private void diffuseHistorical(String instrumentCode, String clientToken, String responseFilename) {
-    String instrumentType = FactSetConstants.HISTORICAL_INSTRUMENT_CODE_TO_TYPE.get(instrumentCode);
-    String baseLabel = FactSetConstants.HISTORICAL_CLIENT_TOKEN_TO_LABEL.get(clientToken);
-    if (instrumentType == null || baseLabel == null) {
-        log.error("Unknown instrument '{}' or client '{}' in historical filename '{}', skipping diffusion",
-                instrumentCode, clientToken, responseFilename);
+    Optional<String> maybeClientLabel =
+        resolveOndemandActiveClient(clientLetter, responseFilename);
+    if (maybeClientLabel.isEmpty()) {
         return;
     }
 
-    String clientLabel = baseLabel + "_H";   // IRP_BV -> IRP_BV_H, APE -> APE_H
+    String clientLabel = maybeClientLabel.get();
+    String instrumentType =
+        FactSetConstants.INSTRUMENT_CODE_TO_TYPE.get(instrumentCode);
 
-    Optional<ClientReferenceDto> client = clientReferenceService.getClientByClientLabel(clientLabel);
-    if (client.isEmpty() || !client.get().isOnDemandActive()) {
-        log.info("Historical client '{}' not found or on-demand inactive, skipping diffusion", clientLabel);
+    if (instrumentType == null) {
+        log.error("Unknown instrument code '{}' in filename '{}',"
+            + " cannot proceed with diffusion",
+            instrumentCode, responseFilename);
         return;
     }
 
-    log.info("FactSet HISTORICAL response '{}': client='{}', instrument='{}', diffusedData='{}'",
-            responseFilename, clientLabel, instrumentType, FactSetConstants.DIFFUSED_DATA_HISTORICAL);
+    log.info("FactSet response file '{}' extracted: client='{}', instrument='{}',"
+        + " diffusedData='{}'", responseFilename, clientLabel, instrumentType,
+        FactSetConstants.DIFFUSED_DATA_DERIVED);
 
-    diffusionHandler.processDiffusionCommand(DiffusionCommand.builder()
+    DiffusionCommand command = DiffusionCommand.builder()
             .clientName(clientLabel)
             .instrument(instrumentType)
-            .diffusedData(FactSetConstants.DIFFUSED_DATA_HISTORICAL)
-            .build());
+            .diffusedData(FactSetConstants.DIFFUSED_DATA_DERIVED)
+            .build();
+
+    diffusionHandler.processDiffusionCommand(command);
 }
+
+
+
+
+
+// Normal (derived) FactSet response files: BP2S_DT<letter>_<code>_DD_<n>_<n>
+public static final String FACTSET_FILENAME_PATTERN =
+    "^BP2S_DT([A-Z])_(EQ|FI|FU|OP|UC)_DD_(\\d+)_(\\d+)$";
+public static final Pattern FACTSET_FILENAME_PATTERN_COMPILED =
+    Pattern.compile(FACTSET_FILENAME_PATTERN);
